@@ -1,0 +1,407 @@
+// ウェブカメラで登録した顔が向いたときだけ、積んである視線発話を再生します。
+
+import { useEffect, useRef, useState } from 'react'
+
+import {
+  GAZE_DWELL_MS,
+  GAZE_MATCH_DISTANCE,
+  GAZE_PITCH_TOLERANCE,
+  GAZE_YAW_TOLERANCE,
+  averageDescriptor,
+  descriptorDistance,
+  poseFromLandmarks,
+  type GazeEnrollment,
+} from '../lib/gazeFace'
+
+interface FaceSample {
+  descriptor: number[]
+  yaw: number
+  pitch: number
+}
+
+interface Props {
+  enabled: boolean
+  enrollment: GazeEnrollment | null
+  enrolling: boolean
+  blocked: boolean
+  ttsEnabled: boolean
+  volume: number
+  stopRef: { current: (() => void) | null }
+  onEnrolled: (enrollment: GazeEnrollment) => void
+  onEnrollClose: () => void
+  onStatus: (status: string) => void
+  onAudio: (analyser: AnalyserNode | null) => void
+  onSpoken: () => void
+  getAudioContext: () => AudioContext
+}
+
+/** 顔モデルの読込を一回にまとめ、監視と登録で同じ検出器を使います。 */
+let faceApiPromise: Promise<typeof import('@vladmandic/face-api')> | null = null
+
+function loadFaceApi(): Promise<typeof import('@vladmandic/face-api')> {
+  if (!faceApiPromise) {
+    faceApiPromise = import('@vladmandic/face-api').then(async (faceapi) => {
+      await Promise.all([
+        faceapi.nets.tinyFaceDetector.loadFromUri('/face-models'),
+        faceapi.nets.faceLandmark68Net.loadFromUri('/face-models'),
+        faceapi.nets.faceRecognitionNet.loadFromUri('/face-models'),
+      ])
+      return faceapi
+    }).catch((cause) => {
+      faceApiPromise = null
+      throw cause
+    })
+  }
+  return faceApiPromise
+}
+
+/** 再生しないまま残ったWAVを、会話の読み上げと同じ通知で回収します。 */
+function notifySpeech(type: string, utteranceId: string, extra: Record<string, unknown> = {}): void {
+  void fetch('/api/speech-events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    keepalive: true,
+    body: JSON.stringify({ type, utterance_id: utteranceId, ...extra }),
+  }).catch(() => undefined)
+}
+
+/** 登録と監視で同じ映像を使い、会話中は視線発話を始めないようにします。 */
+export default function GazeSpeechMonitor({
+  enabled,
+  enrollment,
+  enrolling,
+  blocked,
+  ttsEnabled,
+  volume,
+  stopRef,
+  onEnrolled,
+  onEnrollClose,
+  onStatus,
+  onAudio,
+  onSpoken,
+  getAudioContext,
+}: Props) {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const sourceRef = useRef<AudioBufferSourceNode | null>(null)
+  const playingRef = useRef(false)
+  const interruptedRef = useRef(false)
+  const blockedRef = useRef(blocked)
+  const volumeRef = useRef(volume)
+  const enrollmentRef = useRef(enrollment)
+  const onStatusRef = useRef(onStatus)
+  const onAudioRef = useRef(onAudio)
+  const onSpokenRef = useRef(onSpoken)
+  const getAudioContextRef = useRef(getAudioContext)
+  const lookSinceRef = useRef<number | null>(null)
+  const armedRef = useRef(true)
+  const [captureError, setCaptureError] = useState('')
+  const [capturing, setCapturing] = useState(false)
+  const cameraNeeded = enrolling || (enabled && enrollment !== null)
+
+  blockedRef.current = blocked
+  volumeRef.current = volume
+  enrollmentRef.current = enrollment
+  onStatusRef.current = onStatus
+  onAudioRef.current = onAudio
+  onSpokenRef.current = onSpoken
+  getAudioContextRef.current = getAudioContext
+
+  useEffect(() => {
+    stopRef.current = stopPlayback
+    return () => {
+      stopRef.current = null
+    }
+  })
+
+  useEffect(() => {
+    if (blocked) stopPlayback()
+  }, [blocked])
+
+  useEffect(() => {
+    if (!cameraNeeded) {
+      stopCamera()
+      if (!enabled) onStatusRef.current('停止中')
+      else if (!enrollment) onStatusRef.current('顔が未登録です')
+      return
+    }
+
+    const video = videoRef.current
+    if (!video) return
+    let cancelled = false
+
+    const start = async () => {
+      onStatusRef.current('カメラを準備しています')
+      try {
+        await loadFaceApi()
+        if (cancelled) return
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        })
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop())
+          return
+        }
+        streamRef.current = stream
+        video.srcObject = stream
+        await video.play()
+        onStatusRef.current(enrolling ? '顔が映ったら登録できます' : '監視中')
+      } catch {
+        if (!cancelled) onStatusRef.current('カメラまたは顔モデルを利用できません')
+      }
+    }
+    void start()
+
+    return () => {
+      cancelled = true
+      stopCamera()
+    }
+  }, [cameraNeeded, enrolling, enabled, enrollment])
+
+  useEffect(() => {
+    if (!enabled || !enrollment || enrolling || blocked || !ttsEnabled) {
+      lookSinceRef.current = null
+      if (blocked) armedRef.current = false
+      return
+    }
+    let stopped = false
+    let busy = false
+
+    const tick = async () => {
+      if (stopped || busy || playingRef.current || blockedRef.current) return
+      const video = videoRef.current
+      if (!video || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) return
+      busy = true
+      try {
+        const faceapi = await loadFaceApi()
+        const detections = await faceapi
+          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+          .withFaceLandmarks()
+          .withFaceDescriptors()
+        if (stopped) return
+        if (detections.length !== 1) {
+          lookSinceRef.current = null
+          armedRef.current = true
+          onStatusRef.current(detections.length === 0 ? '顔が見つかりません' : '顔が複数あります')
+          return
+        }
+        const currentEnrollment = enrollmentRef.current
+        if (!currentEnrollment) return
+        const detection = detections[0]
+        const distance = descriptorDistance(currentEnrollment.descriptor, Array.from(detection.descriptor))
+        if (distance > GAZE_MATCH_DISTANCE) {
+          lookSinceRef.current = null
+          armedRef.current = true
+          onStatusRef.current('登録した顔と一致しません')
+          return
+        }
+        const pose = poseFromLandmarks(detection.landmarks.positions)
+        const looking = pose !== null
+          && Math.abs(pose.yaw - currentEnrollment.yaw) <= GAZE_YAW_TOLERANCE
+          && Math.abs(pose.pitch - currentEnrollment.pitch) <= GAZE_PITCH_TOLERANCE
+        if (!looking) {
+          lookSinceRef.current = null
+          armedRef.current = true
+          onStatusRef.current('本人を確認しています')
+          return
+        }
+        if (!armedRef.current) {
+          onStatusRef.current('カメラを見ています')
+          return
+        }
+        if (lookSinceRef.current === null) lookSinceRef.current = performance.now()
+        if (performance.now() - lookSinceRef.current < GAZE_DWELL_MS) {
+          onStatusRef.current('カメラを見ています')
+          return
+        }
+        lookSinceRef.current = null
+        armedRef.current = false
+        await claimAndPlay()
+      } catch {
+        if (!stopped) onStatusRef.current('顔の確認に失敗しました')
+      } finally {
+        busy = false
+      }
+    }
+
+    const timer = window.setInterval(() => void tick(), 200)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [blocked, enabled, enrolling, enrollment, ttsEnabled])
+
+  useEffect(() => {
+    if (enabled && enrollment && !ttsEnabled) onStatusRef.current('音声合成が無効です')
+  }, [enabled, enrollment, ttsEnabled])
+
+  /** 今映っている顔を数枚重ね、登録時の向きを基準として保存します。 */
+  const captureFace = async () => {
+    const video = videoRef.current
+    if (!video || capturing) return
+    setCapturing(true)
+    setCaptureError('')
+    try {
+      const faceapi = await loadFaceApi()
+      const samples: FaceSample[] = []
+      for (let index = 0; index < 5; index += 1) {
+        const detections = await faceapi
+          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+          .withFaceLandmarks()
+          .withFaceDescriptors()
+        if (detections.length !== 1) {
+          setCaptureError('顔が一つだけ映る位置で登録してください。')
+          return
+        }
+        const pose = poseFromLandmarks(detections[0].landmarks.positions)
+        if (!pose) {
+          setCaptureError('顔の位置を読み取れませんでした。')
+          return
+        }
+        samples.push({ descriptor: Array.from(detections[0].descriptor), ...pose })
+        await new Promise((resolve) => window.setTimeout(resolve, 120))
+      }
+      const first = samples[0].descriptor
+      if (samples.some((sample) => descriptorDistance(first, sample.descriptor) > 0.45)) {
+        setCaptureError('顔が動いています。正面を向いて止まってください。')
+        return
+      }
+      onEnrolled({
+        descriptor: averageDescriptor(samples.map((sample) => sample.descriptor)),
+        yaw: samples.reduce((sum, sample) => sum + sample.yaw, 0) / samples.length,
+        pitch: samples.reduce((sum, sample) => sum + sample.pitch, 0) / samples.length,
+      })
+      onEnrollClose()
+    } catch {
+      setCaptureError('顔を登録できませんでした。')
+    } finally {
+      setCapturing(false)
+    }
+  }
+
+  /** 待ち行列の先頭を受け取り、会話の口パクと同じ経路で再生します。 */
+  async function claimAndPlay(): Promise<void> {
+    if (playingRef.current || blockedRef.current) return
+    playingRef.current = true
+    let utteranceId = ''
+    let started = false
+    try {
+      const response = await fetch('/api/gaze-speech/claim', { method: 'POST' })
+      const payload = await response.json() as Record<string, unknown>
+      if (!response.ok) {
+        onStatusRef.current(typeof payload.detail === 'string' ? payload.detail : '視線発話を準備できませんでした')
+        return
+      }
+      if (payload.spoken !== true || typeof payload.audio_url !== 'string' || typeof payload.utterance_id !== 'string') {
+        onStatusRef.current('話す内容はありません')
+        return
+      }
+      if (blockedRef.current) {
+        notifySpeech('speech.cancelled', payload.utterance_id, { reason: '会話が始まったため視線発話を中止しました' })
+        return
+      }
+      utteranceId = payload.utterance_id
+      const context = getAudioContextRef.current()
+      const audioResponse = await fetch(payload.audio_url)
+      if (!audioResponse.ok) throw new Error('音声ファイルを取得できませんでした')
+      const buffer = await context.decodeAudioData(await audioResponse.arrayBuffer())
+      if (blockedRef.current) {
+        notifySpeech('speech.cancelled', utteranceId, { reason: '会話が始まったため視線発話を中止しました' })
+        return
+      }
+      const completed = await playBuffer(context, buffer, utteranceId)
+      started = completed
+      if (completed) onSpokenRef.current()
+    } catch {
+      if (utteranceId && !started) notifySpeech('speech.failed', utteranceId, { reason: '視線発話を再生できませんでした' })
+      onStatusRef.current('音声を再生できませんでした')
+    } finally {
+      playingRef.current = false
+    }
+  }
+
+  /** 口パク用の波形を親へ渡し、再生が終わるか中断されるまで待ちます。 */
+  function playBuffer(context: AudioContext, buffer: AudioBuffer, utteranceId: string): Promise<boolean> {
+    const source = context.createBufferSource()
+    const analyser = context.createAnalyser()
+    const gain = context.createGain()
+    source.buffer = buffer
+    analyser.fftSize = 2048
+    gain.gain.value = volumeRef.current
+    source.connect(analyser)
+    analyser.connect(gain)
+    gain.connect(context.destination)
+    sourceRef.current = source
+    interruptedRef.current = false
+    onAudioRef.current(analyser)
+    onStatusRef.current('話しかけています')
+    notifySpeech('speech.started', utteranceId)
+    const startedAt = performance.now()
+    return new Promise((resolve) => {
+      source.onended = () => {
+        const interrupted = interruptedRef.current
+        if (sourceRef.current === source) sourceRef.current = null
+        onAudioRef.current(null)
+        notifySpeech(
+          interrupted ? 'speech.cancelled' : 'speech.completed',
+          utteranceId,
+          interrupted
+            ? { reason: '視線発話を中止しました' }
+            : { played_ms: Math.round(performance.now() - startedAt) },
+        )
+        resolve(!interrupted)
+      }
+      void context.resume()
+      source.start()
+    })
+  }
+
+  function stopPlayback(): void {
+    interruptedRef.current = true
+    const source = sourceRef.current
+    sourceRef.current = null
+    if (source) {
+      try {
+        source.stop()
+      } catch {
+        // 再生前や終了直後の停止は、そのまま後始末を続けます。
+      }
+    }
+    onAudioRef.current(null)
+    playingRef.current = false
+    lookSinceRef.current = null
+    armedRef.current = false
+  }
+
+  function stopCamera(): void {
+    streamRef.current?.getTracks().forEach((track) => track.stop())
+    streamRef.current = null
+    if (videoRef.current) videoRef.current.srcObject = null
+  }
+
+  return (
+    <div className={enrolling ? 'gaze-enroll-overlay' : undefined}>
+      <video
+        ref={videoRef}
+        className={enrolling ? 'gaze-camera-preview' : 'gaze-camera-source'}
+        muted
+        playsInline
+        aria-hidden={enrolling ? undefined : true}
+      />
+      {enrolling && (
+        <div className="gaze-enroll-card" role="dialog" aria-modal="true" aria-label="顔の登録">
+          <h2>顔を登録</h2>
+          <p>ウェブカメラの正面を向いて、顔が一つだけ映った状態で登録してください。画像は保存せず、このブラウザに特徴量だけを残します。</p>
+            {captureError && <p className="settings-error" role="alert">{captureError}</p>}
+            <div className="settings-row-actions">
+              <button type="button" className="primary" disabled={capturing} onClick={() => void captureFace()}>
+                {capturing ? '登録中…' : 'この顔を登録'}
+              </button>
+              <button type="button" disabled={capturing} onClick={onEnrollClose}>キャンセル</button>
+            </div>
+          </div>
+      )}
+    </div>
+  )
+}

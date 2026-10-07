@@ -17,3 +17,5 @@ local-assets/backgrounds/*
 local-assets/whisper/
 runtime/audio/*.wav
 runtime/images/*
+runtime/gaze_speech.json
+runtime/gaze_speech.json.tmp

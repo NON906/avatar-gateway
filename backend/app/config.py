@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -37,6 +38,9 @@ class Settings:
         "HERMES_IMAGE_CACHE_DIR",
         "~/.hermes/cache/images",
     )).expanduser()
+    hermes_cron_dir: Path = Path(os.getenv("HERMES_CRON_DIR", "~/.hermes/cron")).expanduser()
+    gaze_cron_job_name: str = os.getenv("AVATAR_GATEWAY_GAZE_CRON_JOB", "avatar-gateway-gaze").strip()
+    gaze_state_file: Path = PROJECT_ROOT / "runtime" / "gaze_speech.json"
     tts_enabled: bool = _as_bool(os.getenv("STYLEBERTVITS2_ENABLED"), True)
     tts_server_url: str = os.getenv("STYLEBERTVITS2_SERVER_URL", "http://127.0.0.1:5000").rstrip("/")
     tts_api_key: str = os.getenv("STYLEBERTVITS2_API_KEY", "")
@@ -89,6 +93,8 @@ def validate_gateway_security(config: Settings) -> None:
         raise RuntimeError("AVATAR_GATEWAY_PORTは1から65535の範囲で指定してください")
     if not 1 <= config.image_retention_days <= 3_650:
         raise RuntimeError("AVATAR_GATEWAY_IMAGE_RETENTION_DAYSは1から3650の範囲で指定してください")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", config.gaze_cron_job_name):
+        raise RuntimeError("AVATAR_GATEWAY_GAZE_CRON_JOBは英数字、ハイフン、アンダースコアだけにしてください")
     if config.stt_enabled:
         if not config.stt_model:
             raise RuntimeError("FASTER_WHISPER_MODELを指定してください")

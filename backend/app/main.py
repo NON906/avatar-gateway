@@ -59,6 +59,7 @@ from .services.speech_tags import (
     fallback_speech_summary,
     strip_speech_tags,
 )
+from .services.gaze_speech import GazeSpeechStore
 from .services.stylebertvits2 import TtsError, create_tts_client, synthesize
 from .services.touch_interaction import present_touch_input, touch_response_instructions
 from .services.ui_settings import UiSettings, UiSettingsError, UiSettingsStore, list_backgrounds
@@ -72,6 +73,18 @@ generated_image_store = GeneratedImageStore(
     settings.image_dir,
     settings.image_retention_days,
 )
+
+
+async def _gaze_speech_scan_loop() -> None:
+    """Hermes cronのlocal出力を定期的に確認し、新しい視線発話だけを積んでおきます。"""
+    while True:
+        try:
+            await asyncio.to_thread(gaze_store.scan)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("gaze speech scan failed")
+        await asyncio.sleep(5)
 
 
 async def _generated_image_cleanup_loop() -> None:
@@ -96,11 +109,13 @@ async def _lifespan(_app: FastAPI):
         _generated_image_cleanup_loop(),
         name="generated-image-cleanup",
     )
+    gaze_task = asyncio.create_task(_gaze_speech_scan_loop(), name="gaze-speech-scan")
     try:
         yield
     finally:
         cleanup_task.cancel()
-        await asyncio.gather(cleanup_task, return_exceptions=True)
+        gaze_task.cancel()
+        await asyncio.gather(cleanup_task, gaze_task, return_exceptions=True)
 
 
 app = FastAPI(title="Avatar Gateway", version="0.1.0", lifespan=_lifespan)
@@ -109,6 +124,11 @@ if settings.gateway_lan_mode:
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(settings.gateway_allowed_hosts))
 _PRODUCER_DONE = object()
 run_coordinator = HermesRunCoordinator(lambda: HermesClient(settings), settings.daily_timezone)
+gaze_store = GazeSpeechStore(
+    settings.hermes_cron_dir,
+    settings.gaze_state_file,
+    settings.gaze_cron_job_name,
+)
 # 読み上げ停止でHermesのRunを巻き込まず、対象のTTSワーカーだけを中断するため保持します。
 speech_sequence_workers: dict[str, asyncio.Task[None]] = {}
 transcriber = FasterWhisperTranscriber(settings)
@@ -964,6 +984,38 @@ async def put_ui_settings(request: Request, value: UiSettings) -> dict:
         return _ui_settings_store().save(value).model_dump(mode="json")
     except UiSettingsError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/gaze-speech")
+async def gaze_speech_status() -> dict:
+    """対象cronジョブの新しい出力を確認し、まだ話していない件数を返します。"""
+    await asyncio.to_thread(gaze_store.scan)
+    return gaze_store.status()
+
+
+@app.post("/api/gaze-speech/claim")
+async def claim_gaze_speech() -> dict:
+    """待ち行列の先頭を音声化し、会話セッションへは書き込みません。"""
+    await asyncio.to_thread(gaze_store.scan)
+    text = await asyncio.to_thread(gaze_store.claim)
+    if text is None:
+        return {**gaze_store.status(), "spoken": False}
+    if not settings.tts_enabled:
+        await asyncio.to_thread(gaze_store.put_back, text)
+        raise HTTPException(status_code=409, detail="音声合成が無効です")
+    try:
+        utterance_id, _audio_path = await synthesize(text, settings)
+    except TtsError:
+        logger.exception("gaze speech synthesis failed")
+        await asyncio.to_thread(gaze_store.put_back, text)
+        raise HTTPException(status_code=502, detail="視線発話の音声を準備できませんでした") from None
+    return {
+        **gaze_store.status(),
+        "spoken": True,
+        "text": text,
+        "utterance_id": utterance_id,
+        "audio_url": f"/api/audio/{utterance_id}.wav",
+    }
 
 
 @app.get("/api/audio/{filename}")

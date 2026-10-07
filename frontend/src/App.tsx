@@ -9,11 +9,13 @@ import MarkdownMessage from './components/MarkdownMessage'
 import SessionActionIcon from './components/SessionActionIcon'
 import SessionHistoryPanel from './components/SessionHistoryPanel'
 import SettingsPanel from './components/SettingsPanel'
+import GazeSpeechMonitor from './components/GazeSpeechMonitor'
 import ToolTimeline from './components/ToolTimeline'
 import VoiceInputControl from './components/VoiceInputControl'
 import VrmStage from './components/VrmStage'
 import { advanceActiveRun, clearActiveRun, readActiveRun, saveActiveRun } from './lib/activeRun'
 import { readDisplayMode, saveDisplayMode } from './lib/displayMode'
+import { readGazeSettings, writeGazeSettings } from './lib/gazeFace'
 import { readSessionMessages, readSessionSummary } from './lib/session'
 import { consumeSse } from './lib/sse'
 import {
@@ -575,9 +577,17 @@ export default function App() {
   const [backgroundAssets, setBackgroundAssets] = useState<BackgroundAsset[]>([])
   const [backgroundsLoading, setBackgroundsLoading] = useState(false)
   const [backgroundsError, setBackgroundsError] = useState('')
+  const [gazeSettings, setGazeSettings] = useState(() => readGazeSettings(localStorage))
+  const [gazeEnrolling, setGazeEnrolling] = useState(false)
+  const [gazeStatus, setGazeStatus] = useState('停止中')
+  const [gazePending, setGazePending] = useState<number | null>(null)
+  const [gazeJobFound, setGazeJobFound] = useState<boolean | null>(null)
+  const [gazeRefresh, setGazeRefresh] = useState(0)
   const logRef = useRef<HTMLDivElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const activeSessionRef = useRef<ConversationSession | null>(null)
+  const conversationActiveRef = useRef(false)
+  const gazeStopRef = useRef<(() => void) | null>(null)
   const sessionIdRef = useRef(0)
   const displayedRunIdRef = useRef<string | null>(null)
   const automaticMotionRef = useRef<string | null>(null)
@@ -586,6 +596,31 @@ export default function App() {
   const backgroundsLoadingRef = useRef(false)
   const uiOverridesRef = useRef(uiOverrides)
   const isBusy = conversationActive
+  conversationActiveRef.current = conversationActive
+
+  useEffect(() => {
+    if (!gazeSettings.enabled) return
+    const controller = new AbortController()
+
+    const load = async () => {
+      try {
+        const response = await fetch('/api/gaze-speech', { signal: controller.signal })
+        if (!response.ok) return
+        const data = await response.json() as { pending?: unknown, job_found?: unknown }
+        if (typeof data.pending === 'number') setGazePending(data.pending)
+        if (typeof data.job_found === 'boolean') setGazeJobFound(data.job_found)
+      } catch (cause) {
+        if (!isAbortError(cause)) setGazeJobFound(null)
+      }
+    }
+
+    void load()
+    const timer = window.setInterval(() => void load(), 15_000)
+    return () => {
+      controller.abort()
+      window.clearInterval(timer)
+    }
+  }, [gazeRefresh, gazeSettings.enabled])
   const displayModeActionLabel = displayMode === 'conversation' ? '標準画面へ切り替える' : '会話画面へ切り替える'
   const historyActionLabel = sessionHistoryOpen ? '会話に戻る' : 'セッション履歴'
   const resourcesActionLabel = agentResourcesOpen ? '会話に戻る' : '機能一覧'
@@ -1376,6 +1411,9 @@ export default function App() {
     const text = rawText.trim()
     if (!text || isBusy || activeSessionRef.current) return
 
+    conversationActiveRef.current = true
+    gazeStopRef.current?.()
+
     // 通常送信ではこの場で、ふれあいでは先行タップ時に同じContextを有効化済みです。
     const audioContext = activateAudioContext()
 
@@ -1655,6 +1693,19 @@ export default function App() {
     })
   }
 
+  /** 視線発話の口パクだけを反映し、会話が始まっているときは状態を上書きしません。 */
+  const handleGazeAudio = (gazeAnalyser: AnalyserNode | null) => {
+    if (conversationActiveRef.current && gazeAnalyser) return
+    setAnalyser(gazeAnalyser)
+    if (conversationActiveRef.current) return
+    setAvatarState(gazeAnalyser ? 'speaking' : 'idle')
+  }
+
+  const updateGazeSettings = (next: typeof gazeSettings) => {
+    setGazeSettings(next)
+    writeGazeSettings(localStorage, next)
+  }
+
   return (
     <main className={`app-shell ${displayMode === 'conversation' ? 'conversation-mode' : 'standard-mode'}`}>
       <section className="avatar-panel">
@@ -1775,6 +1826,7 @@ export default function App() {
         {health && !health.vrm_available && <p className="notice">VRMが見つかりません。同梱・ローカルのVRMとAVATAR_VRM_FILEを確認してください。</p>}
         {health?.motion_catalog_error && <p className="notice">モーション設定エラー: {health.motion_catalog_error}</p>}
         {missingMotions.length > 0 && <p className="notice">VRMAが見つかりません: {missingMotions.map((motion) => motion.file).join('、')}</p>}
+        {gazeSettings.enabled && <p className="gaze-live-status" role="status">{gazeStatus}</p>}
       </section>
 
       <section className="chat-panel">
@@ -1877,6 +1929,14 @@ export default function App() {
             onReloadBackgrounds={() => void loadBackgrounds()}
             onResetBrowser={resetBrowserUiSettings}
             onSaveDefaults={() => void saveServerUiDefaults()}
+            gazeEnabled={gazeSettings.enabled}
+            gazeEnrolled={gazeSettings.enrollment !== null}
+            gazeStatus={gazeStatus}
+            gazePending={gazePending}
+            gazeJobFound={gazeJobFound}
+            onGazeEnabled={(enabled) => updateGazeSettings({ ...gazeSettings, enabled })}
+            onGazeEnroll={() => setGazeEnrolling(true)}
+            onGazeClear={() => updateGazeSettings({ ...gazeSettings, enrollment: null })}
           />
         ) : (
           <div className="conversation-scroll" ref={logRef}>
@@ -1954,6 +2014,24 @@ export default function App() {
             </div>
           </form>
         )}
+        <GazeSpeechMonitor
+          enabled={gazeSettings.enabled}
+          enrollment={gazeSettings.enrollment}
+          enrolling={gazeEnrolling}
+          blocked={conversationActive}
+          ttsEnabled={health?.tts_enabled === true}
+          volume={uiSettings.speech_volume}
+          stopRef={gazeStopRef}
+          onEnrolled={(enrollment) => {
+            updateGazeSettings({ enabled: true, enrollment })
+            setGazeStatus('顔を登録しました')
+          }}
+          onEnrollClose={() => setGazeEnrolling(false)}
+          onStatus={setGazeStatus}
+          onAudio={handleGazeAudio}
+          onSpoken={() => setGazeRefresh((current) => current + 1)}
+          getAudioContext={activateAudioContext}
+        />
       </section>
     </main>
   )

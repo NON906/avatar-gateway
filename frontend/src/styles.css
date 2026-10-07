@@ -285,6 +285,13 @@ button, textarea { font: inherit; }
 .settings-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .settings-row-actions button { padding: 8px 10px; border: 1px solid #cbd5e1; border-radius: 8px; color: #334155; background: #fff; cursor: pointer; font-size: 11px; }
 .settings-row-actions button:hover { background: #f1f5f9; }
+.gaze-live-status { position: absolute; z-index: 4; left: 28px; bottom: 24px; margin: 0; padding: 8px 12px; border: 1px solid #ffffff26; border-radius: 999px; color: #e2e8f0; background: #0f172acc; font-size: 12px; }
+.gaze-camera-source { position: fixed; width: 320px; height: 240px; left: -4000px; top: 0; pointer-events: none; }
+.gaze-camera-preview { position: relative; z-index: 46; width: min(320px, calc(100vw - 48px)); height: 240px; object-fit: cover; border-radius: 12px; transform: scaleX(-1); background: #0f172a; }
+.gaze-enroll-overlay { position: fixed; z-index: 45; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 24px; background: #020617cc; }
+.gaze-enroll-card { width: min(420px, 100%); padding: 22px; border: 1px solid #cbd5e1; border-radius: 16px; color: #1e293b; background: #fff; box-shadow: 0 20px 50px #0006; }
+.gaze-enroll-card h2 { margin: 0 0 8px; font-size: 18px; }
+.gaze-enroll-card p { margin: 0 0 14px; color: #475569; font-size: 13px; line-height: 1.6; }
 .settings-row-actions button.primary { color: #fff; border-color: #2563eb; background: #2563eb; }
 .settings-row-actions button.primary:hover { background: #1d4ed8; }
 .settings-row-actions button:disabled { color: #94a3b8; border-color: #cbd5e1; background: #f1f5f9; cursor: not-allowed; }

@@ -29,6 +29,14 @@ interface Props {
   backgrounds: BackgroundAsset[]
   backgroundsLoading: boolean
   backgroundsError: string
+  gazeEnabled: boolean
+  gazeEnrolled: boolean
+  gazeStatus: string
+  gazePending: number | null
+  gazeJobFound: boolean | null
+  onGazeEnabled: (enabled: boolean) => void
+  onGazeEnroll: () => void
+  onGazeClear: () => void
   onChange: (changes: UiSettingsOverrides) => void
   onReloadBackgrounds: () => void
   onResetBrowser: () => void
@@ -45,6 +53,14 @@ export default function SettingsPanel({
   backgrounds,
   backgroundsLoading,
   backgroundsError,
+  gazeEnabled,
+  gazeEnrolled,
+  gazeStatus,
+  gazePending,
+  gazeJobFound,
+  onGazeEnabled,
+  onGazeEnroll,
+  onGazeClear,
   onChange,
   onReloadBackgrounds,
   onResetBrowser,
@@ -274,6 +290,36 @@ export default function SettingsPanel({
             />
           </label>
           <small>周囲の音で反応する場合は感度の数値を上げ、声を拾わない場合は下げます。</small>
+        </section>
+
+        <section className="ui-settings-section">
+          <h3>視線で話しかける</h3>
+          <p>
+            登録した顔がウェブカメラを向くと、Hermesのcronがlocalへ出した短い文を読み上げます。通常の会話には残りません。
+            指示文は <code>docs/gaze_speech_hermes.md</code> です。
+          </p>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={gazeEnabled}
+              onChange={(event) => onGazeEnabled(event.target.checked)}
+            />
+            <span>
+              <strong>視線発話を使う</strong>
+              <small>顔の登録が済んでいて、音声合成が有効なときだけ話します。</small>
+            </span>
+          </label>
+          <div className="settings-row-actions">
+            <button type="button" className="primary" onClick={onGazeEnroll}>顔を登録</button>
+            <button type="button" disabled={!gazeEnrolled} onClick={onGazeClear}>登録を消す</button>
+          </div>
+          <small>
+            {gazeEnrolled ? 'このブラウザに顔を登録済みです。' : '顔は未登録です。'}
+            {gazePending === null ? '' : ` 未読は${gazePending}件です。`}
+            {gazeJobFound === false ? ' Hermes側に avatar-gateway-gaze のジョブがまだ見当たりません。' : ''}
+            {gazeStatus ? ` 状態: ${gazeStatus}` : ''}
+            {' '}ブラウザ設定のリセットでは、この顔登録は消えません。
+          </small>
         </section>
 
         <section className="ui-settings-section">
