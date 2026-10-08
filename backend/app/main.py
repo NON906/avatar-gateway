@@ -997,24 +997,45 @@ async def gaze_speech_status() -> dict:
 async def claim_gaze_speech() -> dict:
     """待ち行列の先頭を音声化し、会話セッションへは書き込みません。"""
     await asyncio.to_thread(gaze_store.scan)
-    text = await asyncio.to_thread(gaze_store.claim)
-    if text is None:
+    performance = await asyncio.to_thread(gaze_store.claim)
+    if performance is None:
         return {**gaze_store.status(), "spoken": False}
     if not settings.tts_enabled:
-        await asyncio.to_thread(gaze_store.put_back, text)
+        await asyncio.to_thread(gaze_store.put_back, performance)
         raise HTTPException(status_code=409, detail="音声合成が無効です")
+    catalog = _load_motion_catalog()
+    created: list[Path] = []
+    beats_out: list[dict] = []
     try:
-        utterance_id, _audio_path = await synthesize(text, settings)
+        async with create_tts_client() as client:
+            for beat in performance.beats:
+                utterance_id, audio_path = await synthesize(beat.text, settings, client)
+                created.append(audio_path)
+                motion = catalog.selectable_motions.get(beat.motion) if beat.motion else None
+                beats_out.append({
+                    "text": beat.text,
+                    "utterance_id": utterance_id,
+                    "audio_url": f"/api/audio/{utterance_id}.wav",
+                    "motion": motion.to_public_dict() if motion else None,
+                    "expression": beat.expression,
+                })
     except TtsError:
         logger.exception("gaze speech synthesis failed")
-        await asyncio.to_thread(gaze_store.put_back, text)
+        for path in created:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning("gaze speech cleanup failed for %s: %s", path, exc)
+        await asyncio.to_thread(gaze_store.put_back, performance)
         raise HTTPException(status_code=502, detail="視線発話の音声を準備できませんでした") from None
+    first = beats_out[0]
     return {
         **gaze_store.status(),
         "spoken": True,
-        "text": text,
-        "utterance_id": utterance_id,
-        "audio_url": f"/api/audio/{utterance_id}.wav",
+        "beats": beats_out,
+        "text": first["text"],
+        "utterance_id": first["utterance_id"],
+        "audio_url": first["audio_url"],
     }
 
 

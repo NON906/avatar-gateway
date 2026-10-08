@@ -13,27 +13,64 @@ Skill名は `avatar-gateway-gaze` です。次の内容でSkillを作成し、cr
 ```markdown
 ---
 name: avatar-gateway-gaze
-description: カメラを向いたときにアバターが話す短い一文だけを作る。用件がなければ無言にする。
+description: Use when preparing gaze speech for the camera cron. Two or three beats, or silence.
 ---
 
 # 視線発話
 
-このSkillは、利用者がカメラを向いたときにアバターが読む一文を用意します。通常の会話へ書き込んだり、他のチャットへ送ったりしません。
+カメラを向いたときに読む反応だけを用意する。通常の会話へは送らない。
 
 ## 出力
 
-最終応答は、次のどちらか一つだけです。
+最終応答は次のどちらか一つだけ。
 
-- 話したい新しい用件があるとき: `[speech]ここに日本語の一文[/speech]`
-- 用件がないとき: `[gaze:silent]`
+用件があるとき: 2つか3つのブロック。各ブロックは `[avatar]` の直後に `[speech]`。`[avatar]` の中は v が 1、motion、expression だけのJSON。motion と expression は下の名前から選び、ブロックごとに前と変える。`[speech]` の中は、確認した用件を静かで具体的な口語の一文にする。
+
+用件がないとき: `[gaze:silent]`
 
 ## 規則
 
-- 一文だけにする。説明、見出し、箇条書き、コードブロックは付けない
-- 前回の出力と同じ内容は繰り返さない
-- 秘密、ファイルパス、コマンド、内部タグの説明は話さない
+- 書式の説明、見出し、箇条書き、コードブロックを出さない
+- 見本や穴埋めの文言をそのまま話さない
+- 前回と同じ内容を繰り返さない
+- 秘密、パス、コマンド、タグの説明を話さない
 - 用件がないのに挨拶や相槌を作らない
 - `[speech]` と `[gaze:silent]` を同時に出さない
+
+## motion
+
+- nod: 同意、短い確認
+- lean_forward: 興味、注意
+- hands_behind_back: 穏やかに考える
+- energetic_raise: 喜び、明るい報告
+- put_your_hands_up: 参った、お手上げ
+- bow: 軽いお礼
+- deep_bow: 深い感謝、真剣な謝罪
+- lightly_spread_arms: 受け入れ
+- sexy_pose: 自信のある決めポーズ
+- cute_standing: 控えめに見せる
+- cute_confident: 可愛い自信
+- small_open_arms: かわいい待機
+- extend_hands: 強めの受け入れ
+- salute: 了解、任務の受諾
+- gentle_open_arms: かわいい待機
+- please: お願い
+- wave: 挨拶
+- crossed_arms: 考え込む
+- angry_pose: 不満
+- nervous_pose: 頬に手を当てる
+- hopping_vampire_pose: 東洋吸血鬼のポーズ
+- strange_pose: かっこよく考える
+- zua_pose: 疑問、軽い否定
+- bat_pose: ダメ、失敗
+- maru_pose: OK、成功
+- thinking_pose: 深く考える
+- inspiration_pose: 思いつき、要点
+- none: どれにも当てはまらない
+
+## expression
+
+neutral, happy, relaxed, sad, angry, surprised, shy
 ```
 
 ## cronジョブ
@@ -50,7 +87,7 @@ description: カメラを向いたときにアバターが話す短い一文だ�
 プロンプトは次のとおりです。
 
 ```text
-記憶、予定、未完了の作業、前回の出力を確認してください。利用者が次にカメラを向いたとき、アバターが話すべき新しい用件があれば、それだけを用意してください。新しい用件がなければ話しかけないでください。最終応答は [speech]日本語の一文[/speech] または [gaze:silent] のどちらか一つだけです。
+記憶、予定、未完了の作業、前回の出力を確認してください。利用者が次にカメラを向いたとき話すべき新しい用件があれば、Skillの形で2つか3つの違う反応を用意してください。新しい用件がなければ [gaze:silent] とだけ返してください。
 ```
 
 作成後、ジョブ一覧で次を確認して報告してください。

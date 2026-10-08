@@ -2030,6 +2030,28 @@ export default function App() {
           onStatus={setGazeStatus}
           onAudio={handleGazeAudio}
           onSpoken={() => setGazeRefresh((current) => current + 1)}
+          onBeat={(data) => {
+            if (conversationActiveRef.current) return
+            if (!data) {
+              setAvatarExpression('neutral')
+              automaticMotionRef.current = null
+              setMotionCommand((current) => ({ id: (current?.id ?? 0) + 1, action: 'stop' }))
+              return
+            }
+            const motion = readSpeechMotion(data, configuredMotions)
+            setAvatarExpression(readSpeechExpression(data))
+            automaticMotionRef.current = motion?.url ?? null
+            setMotionCommand((current) => motion
+              ? {
+                  id: (current?.id ?? 0) + 1,
+                  action: 'play',
+                  name: motion.label,
+                  url: motion.url,
+                  playback: motion.playback,
+                  exitDurationSeconds: motion.exitDurationSeconds,
+                }
+              : { id: (current?.id ?? 0) + 1, action: 'stop' })
+          }}
           getAudioContext={activateAudioContext}
         />
       </section>

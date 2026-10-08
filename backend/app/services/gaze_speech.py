@@ -3,28 +3,111 @@
 import json
 import re
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
+from .motion_tags import AVATAR_EXPRESSIONS
 
-_SPEECH_PATTERN = re.compile(r"\[speech\](.*?)\[/speech\]", re.IGNORECASE | re.DOTALL)
+
+_TOKEN_PATTERN = re.compile(
+    r"\[avatar\](.*?)\[/avatar\]|\[speech\](.*?)\[/speech\]",
+    re.IGNORECASE | re.DOTALL,
+)
+_INLINE_AVATAR_PATTERN = re.compile(r"\[avatar\].*?\[/avatar\]", re.IGNORECASE | re.DOTALL)
 _JOB_ID_PATTERN = re.compile(r"^[0-9a-fA-F]{8,64}$")
 _OUTPUT_NAME_PATTERN = re.compile(r"^[0-9A-Za-z._-]{1,80}\.md$")
+_VALID_MOTION = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _SILENT_MARKER = "[gaze:silent]"
+_RESPONSE_HEADING = "## Response"
+_PLACEHOLDER_TEXTS = frozenset({"ここに日本語の一文", "日本語の一文"})
 _MAX_UTTERANCE_CHARS = 300
+_MAX_BEATS = 3
 _MAX_QUEUE = 20
 _MAX_SEEN = 400
 _MAX_OUTPUT_BYTES = 256 * 1024
 
 
-def extract_gaze_lines(text: str) -> tuple[str, ...]:
-    """視線発話のタグ内だけを返し、無言指定やタグのない本文は空にします。"""
-    lines: list[str] = []
-    for raw in _SPEECH_PATTERN.findall(text):
-        collapsed = " ".join(raw.split())
-        if not collapsed or _SILENT_MARKER in collapsed.lower():
+@dataclass(frozen=True)
+class GazeBeat:
+    """一度の視線で続けて表す、動きと表情の付いた一文です。"""
+
+    text: str
+    motion: str | None = None
+    expression: str = "neutral"
+
+
+@dataclass(frozen=True)
+class GazePerformance:
+    """カメラを見た一回でまとめて再生する反応です。"""
+
+    beats: tuple[GazeBeat, ...]
+
+    def to_stored(self) -> dict:
+        """再起動後も動きと表情を失わない形で返します。"""
+        return {
+            "beats": [
+                {"text": beat.text, "motion": beat.motion, "expression": beat.expression}
+                for beat in self.beats
+            ],
+        }
+
+
+def extract_gaze_performance(text: str) -> GazePerformance | None:
+    """応答本文の演技だけを返し、無言指定や指示の見本は空にします。"""
+    motion: str | None = None
+    expression = "neutral"
+    beats: list[GazeBeat] = []
+    for match in _TOKEN_PATTERN.finditer(_response_body(text)):
+        avatar_raw, speech_raw = match.group(1), match.group(2)
+        if avatar_raw is not None:
+            motion, expression = _parse_avatar(avatar_raw)
             continue
-        lines.append(_limit_utterance(collapsed))
-    return tuple(lines)
+        spoken = _speech_text(speech_raw or "")
+        if not spoken:
+            continue
+        beats.append(GazeBeat(spoken, motion, expression))
+        if len(beats) >= _MAX_BEATS:
+            break
+    if not beats:
+        return None
+    return GazePerformance(tuple(beats))
+
+
+def _response_body(text: str) -> str:
+    """cronの記録に含まれる指示文の見本を読み上げず、末尾の応答だけを使います。"""
+    index = text.rfind(_RESPONSE_HEADING)
+    if index < 0:
+        return text
+    return text[index + len(_RESPONSE_HEADING):]
+
+
+def _parse_avatar(raw: str) -> tuple[str | None, str]:
+    """制御JSONから使える動きと表情だけを残し、崩れたら無動作へ戻します。"""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "neutral"
+    if not isinstance(payload, dict):
+        return None, "neutral"
+    motion_name = None
+    motion = payload.get("motion")
+    if isinstance(motion, str):
+        candidate = motion.strip().lower()
+        if candidate != "none" and _VALID_MOTION.fullmatch(candidate):
+            motion_name = candidate
+    expression = "neutral"
+    raw_expression = payload.get("expression")
+    if isinstance(raw_expression, str) and raw_expression.strip().lower() in AVATAR_EXPRESSIONS:
+        expression = raw_expression.strip().lower()
+    return motion_name, expression
+
+
+def _speech_text(raw: str) -> str:
+    """読み上げる一文だけを残し、無言指定と穴埋め文言は捨てます。"""
+    collapsed = " ".join(_INLINE_AVATAR_PATTERN.sub("", raw).split())
+    if not collapsed or collapsed in _PLACEHOLDER_TEXTS or _SILENT_MARKER in collapsed.lower():
+        return ""
+    return _limit_utterance(collapsed)
 
 
 def _limit_utterance(text: str) -> str:
@@ -39,6 +122,50 @@ def _limit_utterance(text: str) -> str:
     return clipped
 
 
+def _performance_from_stored(value: object) -> GazePerformance | None:
+    """旧い一文の保存形式も、動きなしの一ブロックとして読みます。"""
+    if isinstance(value, str):
+        beat = _beat_from_mapping({"text": value})
+        return GazePerformance((beat,)) if beat else None
+    if not isinstance(value, dict):
+        return None
+    raw_beats = value.get("beats")
+    if not isinstance(raw_beats, list):
+        beat = _beat_from_mapping(value)
+        return GazePerformance((beat,)) if beat else None
+    beats: list[GazeBeat] = []
+    for item in raw_beats:
+        beat = _beat_from_mapping(item)
+        if beat is not None:
+            beats.append(beat)
+    if not beats:
+        return None
+    return GazePerformance(tuple(beats[:_MAX_BEATS]))
+
+
+def _beat_from_mapping(value: object) -> GazeBeat | None:
+    """保存済みの一ブロックから、読み上げできる文と検証済みの演技だけを残します。"""
+    if not isinstance(value, dict):
+        return None
+    raw_text = value.get("text")
+    if not isinstance(raw_text, str):
+        return None
+    text = _speech_text(raw_text)
+    if not text:
+        return None
+    motion = value.get("motion")
+    motion_name = None
+    if isinstance(motion, str):
+        candidate = motion.strip().lower()
+        if candidate != "none" and _VALID_MOTION.fullmatch(candidate):
+            motion_name = candidate
+    expression = "neutral"
+    raw_expression = value.get("expression")
+    if isinstance(raw_expression, str) and raw_expression.strip().lower() in AVATAR_EXPRESSIONS:
+        expression = raw_expression.strip().lower()
+    return GazeBeat(text, motion_name, expression)
+
+
 class GazeSpeechStore:
     """名前が一致するcronジョブの新しい出力だけを、再起動後も話す順で保持します。"""
 
@@ -51,10 +178,10 @@ class GazeSpeechStore:
         self._seeded = False
         self._job_found = False
         self._seen: set[str] = set()
-        self._queue: list[str] = []
+        self._queue: list[dict] = []
 
     def scan(self) -> int:
-        """未処理の出力を確認し、新しく積んだ件数を返します。"""
+        """未処理の出力を確認し、新しく積んだ反応の件数を返します。"""
         with self._lock:
             self._load_locked()
             job_ids = self._matching_job_ids()
@@ -80,14 +207,17 @@ class GazeSpeechStore:
                         text = path.read_text(encoding="utf-8", errors="replace")
                     except OSError:
                         continue
-                    for line in extract_gaze_lines(text):
-                        if line in self._queue:
-                            continue
-                        if len(self._queue) >= _MAX_QUEUE:
-                            self._queue.pop(0)
-                        self._queue.append(line)
-                        added += 1
                     self._seen.add(key)
+                    performance = extract_gaze_performance(text)
+                    if performance is None:
+                        continue
+                    stored = performance.to_stored()
+                    if stored in self._queue:
+                        continue
+                    if len(self._queue) >= _MAX_QUEUE:
+                        self._queue.pop(0)
+                    self._queue.append(stored)
+                    added += 1
             self._seeded = True
             if len(self._seen) > _MAX_SEEN:
                 self._seen = set(list(self._seen)[-_MAX_SEEN:])
@@ -104,25 +234,25 @@ class GazeSpeechStore:
                 "job_name": self._job_name,
             }
 
-    def claim(self) -> str | None:
-        """次の一文を待ち行列から外します。"""
+    def claim(self) -> GazePerformance | None:
+        """次の反応全体を待ち行列から外します。"""
         with self._lock:
             self._load_locked()
             if not self._queue:
                 return None
-            text = self._queue.pop(0)
+            performance = _performance_from_stored(self._queue.pop(0))
             self._save_locked()
-            return text
+            return performance
 
-    def put_back(self, text: str) -> None:
-        """音声化に失敗した一文を、同じ順序の先頭へ戻します。"""
-        normalized = " ".join(text.split())
-        if not normalized:
+    def put_back(self, performance: GazePerformance) -> None:
+        """音声化に失敗した反応を、同じ順序の先頭へ戻します。"""
+        if not performance.beats:
             return
+        stored = performance.to_stored()
         with self._lock:
             self._load_locked()
-            if normalized not in self._queue:
-                self._queue.insert(0, normalized)
+            if stored not in self._queue:
+                self._queue.insert(0, stored)
             self._save_locked()
 
     def _matching_job_ids(self) -> tuple[str, ...]:
@@ -170,7 +300,12 @@ class GazeSpeechStore:
             self._seen = {item for item in seen if isinstance(item, str)}
         queue = payload.get("queue")
         if isinstance(queue, list):
-            self._queue = [item.strip() for item in queue if isinstance(item, str) and item.strip()]
+            restored: list[dict] = []
+            for item in queue:
+                performance = _performance_from_stored(item)
+                if performance is not None:
+                    restored.append(performance.to_stored())
+            self._queue = restored
 
     def _save_locked(self) -> None:
         """待ち行列の消失を避けるため、一時ファイル経由で状態を置き換えます。"""

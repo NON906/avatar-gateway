@@ -31,6 +31,7 @@ interface Props {
   onEnrollClose: () => void
   onStatus: (status: string) => void
   onAudio: (analyser: AnalyserNode | null) => void
+  onBeat: (data: Record<string, unknown> | null) => void
   onSpoken: () => void
   getAudioContext: () => AudioContext
 }
@@ -65,6 +66,36 @@ function notifySpeech(type: string, utteranceId: string, extra: Record<string, u
   }).catch(() => undefined)
 }
 
+interface GazeBeatPlayback {
+  utteranceId: string
+  audioUrl: string
+  motion: unknown
+  expression: unknown
+}
+
+/** 新しい複数ブロックと、以前の単一音声応答のどちらも再生順に揃えます。 */
+function readGazeBeats(payload: Record<string, unknown>): GazeBeatPlayback[] {
+  const source = Array.isArray(payload.beats) && payload.beats.length > 0 ? payload.beats : [payload]
+  const beats: GazeBeatPlayback[] = []
+  for (const item of source) {
+    if (!item || typeof item !== 'object') continue
+    const beat = item as Record<string, unknown>
+    if (typeof beat.audio_url !== 'string' || typeof beat.utterance_id !== 'string') continue
+    beats.push({
+      utteranceId: beat.utterance_id,
+      audioUrl: beat.audio_url,
+      motion: beat.motion ?? null,
+      expression: beat.expression ?? 'neutral',
+    })
+  }
+  return beats
+}
+
+/** 再生しなかったWAVを、会話の読み上げと同じ通知で回収します。 */
+function cancelGazeBeats(beats: GazeBeatPlayback[], reason: string): void {
+  for (const beat of beats) notifySpeech('speech.cancelled', beat.utteranceId, { reason })
+}
+
 /** 登録と監視で同じ映像を使い、会話中は視線発話を始めないようにします。 */
 export default function GazeSpeechMonitor({
   enabled,
@@ -78,6 +109,7 @@ export default function GazeSpeechMonitor({
   onEnrollClose,
   onStatus,
   onAudio,
+  onBeat,
   onSpoken,
   getAudioContext,
 }: Props) {
@@ -91,6 +123,7 @@ export default function GazeSpeechMonitor({
   const enrollmentRef = useRef(enrollment)
   const onStatusRef = useRef(onStatus)
   const onAudioRef = useRef(onAudio)
+  const onBeatRef = useRef(onBeat)
   const onSpokenRef = useRef(onSpoken)
   const getAudioContextRef = useRef(getAudioContext)
   const lookSinceRef = useRef<number | null>(null)
@@ -104,6 +137,7 @@ export default function GazeSpeechMonitor({
   enrollmentRef.current = enrollment
   onStatusRef.current = onStatus
   onAudioRef.current = onAudio
+  onBeatRef.current = onBeat
   onSpokenRef.current = onSpoken
   getAudioContextRef.current = getAudioContext
 
@@ -280,12 +314,12 @@ export default function GazeSpeechMonitor({
     }
   }
 
-  /** 待ち行列の先頭を受け取り、会話の口パクと同じ経路で再生します。 */
+  /** 待ち行列の先頭を受け取り、動きを変えながら続けて再生します。 */
   async function claimAndPlay(): Promise<void> {
     if (playingRef.current || blockedRef.current) return
     playingRef.current = true
-    let utteranceId = ''
-    let started = false
+    let acted = false
+    let unplayed: GazeBeatPlayback[] = []
     try {
       const response = await fetch('/api/gaze-speech/claim', { method: 'POST' })
       const payload = await response.json() as Record<string, unknown>
@@ -293,36 +327,63 @@ export default function GazeSpeechMonitor({
         onStatusRef.current(typeof payload.detail === 'string' ? payload.detail : '視線発話を準備できませんでした')
         return
       }
-      if (payload.spoken !== true || typeof payload.audio_url !== 'string' || typeof payload.utterance_id !== 'string') {
+      const beats = readGazeBeats(payload)
+      if (payload.spoken !== true || beats.length === 0) {
         onStatusRef.current('話す内容はありません')
         return
       }
       if (blockedRef.current) {
-        notifySpeech('speech.cancelled', payload.utterance_id, { reason: '会話が始まったため視線発話を中止しました' })
+        cancelGazeBeats(beats, '会話が始まったため視線発話を中止しました')
         return
       }
-      utteranceId = payload.utterance_id
       const context = getAudioContextRef.current()
-      const audioResponse = await fetch(payload.audio_url)
-      if (!audioResponse.ok) throw new Error('音声ファイルを取得できませんでした')
-      const buffer = await context.decodeAudioData(await audioResponse.arrayBuffer())
-      if (blockedRef.current) {
-        notifySpeech('speech.cancelled', utteranceId, { reason: '会話が始まったため視線発話を中止しました' })
-        return
+      let completedAll = true
+      for (let index = 0; index < beats.length; index += 1) {
+        const beat = beats[index]
+        unplayed = beats.slice(index)
+        if (blockedRef.current) {
+          cancelGazeBeats(unplayed, '会話が始まったため視線発話を中止しました')
+          unplayed = []
+          completedAll = false
+          break
+        }
+        const audioResponse = await fetch(beat.audioUrl)
+        if (!audioResponse.ok) throw new Error('音声ファイルを取得できませんでした')
+        const buffer = await context.decodeAudioData(await audioResponse.arrayBuffer())
+        if (blockedRef.current) {
+          cancelGazeBeats(unplayed, '会話が始まったため視線発話を中止しました')
+          unplayed = []
+          completedAll = false
+          break
+        }
+        onBeatRef.current({ motion: beat.motion, expression: beat.expression })
+        acted = true
+        unplayed = beats.slice(index + 1)
+        const completed = await playBuffer(context, buffer, beat.utteranceId, index < beats.length - 1)
+        if (!completed) {
+          cancelGazeBeats(unplayed, '視線発話を中止しました')
+          unplayed = []
+          completedAll = false
+          break
+        }
       }
-      const completed = await playBuffer(context, buffer, utteranceId)
-      started = completed
-      if (completed) onSpokenRef.current()
+      if (completedAll) onSpokenRef.current()
     } catch {
-      if (utteranceId && !started) notifySpeech('speech.failed', utteranceId, { reason: '視線発話を再生できませんでした' })
+      cancelGazeBeats(unplayed, '視線発話を再生できませんでした')
       onStatusRef.current('音声を再生できませんでした')
     } finally {
       playingRef.current = false
+      if (acted) onBeatRef.current(null)
     }
   }
 
   /** 口パク用の波形を親へ渡し、再生が終わるか中断されるまで待ちます。 */
-  function playBuffer(context: AudioContext, buffer: AudioBuffer, utteranceId: string): Promise<boolean> {
+  function playBuffer(
+    context: AudioContext,
+    buffer: AudioBuffer,
+    utteranceId: string,
+    handoff: boolean,
+  ): Promise<boolean> {
     const source = context.createBufferSource()
     const analyser = context.createAnalyser()
     const gain = context.createGain()
@@ -342,7 +403,7 @@ export default function GazeSpeechMonitor({
       source.onended = () => {
         const interrupted = interruptedRef.current
         if (sourceRef.current === source) sourceRef.current = null
-        onAudioRef.current(null)
+        if (!handoff || interrupted) onAudioRef.current(null)
         notifySpeech(
           interrupted ? 'speech.cancelled' : 'speech.completed',
           utteranceId,
