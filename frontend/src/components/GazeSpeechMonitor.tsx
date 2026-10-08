@@ -3,6 +3,18 @@
 import { useEffect, useRef, useState } from 'react'
 
 import {
+  applyGammaByte,
+  averageLuma,
+  centerSampleRegion,
+  detectorTune,
+  gammaExponentForLuma,
+} from '../lib/detectEase'
+import {
+  chooseFollowBox,
+  faceFollowAngles,
+  type FaceFollowAngles,
+} from '../lib/faceFollow'
+import {
   GAZE_DWELL_MS,
   GAZE_MATCH_DISTANCE,
   GAZE_PITCH_TOLERANCE,
@@ -21,6 +33,8 @@ interface FaceSample {
 
 interface Props {
   enabled: boolean
+  faceFollow: boolean
+  detectEase: boolean
   enrollment: GazeEnrollment | null
   enrolling: boolean
   blocked: boolean
@@ -30,6 +44,8 @@ interface Props {
   onEnrolled: (enrollment: GazeEnrollment) => void
   onEnrollClose: () => void
   onStatus: (status: string) => void
+  onFaceAngles: (angles: FaceFollowAngles | null) => void
+  onFaceFollowStatus: (status: string) => void
   onAudio: (analyser: AnalyserNode | null) => void
   onBeat: (data: Record<string, unknown> | null) => void
   onSpoken: () => void
@@ -54,6 +70,113 @@ function loadFaceApi(): Promise<typeof import('@vladmandic/face-api')> {
     })
   }
   return faceApiPromise
+}
+
+type FaceApi = Awaited<ReturnType<typeof loadFaceApi>>
+
+interface LocatedFace {
+  box: { x: number, y: number, width: number, height: number }
+  descriptor: number[] | null
+  landmarks: { x: number, y: number }[] | null
+}
+
+function plainBox(box: { x: number, y: number, width: number, height: number }): LocatedFace['box'] {
+  return { x: box.x, y: box.y, width: box.width, height: box.height }
+}
+
+/** 暗い中央部だけを、画面に出さないキャンバスへ明るく描きます。明るいときは元の映像を返します。 */
+function detectionSource(
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  ease: boolean,
+): HTMLVideoElement | HTMLCanvasElement {
+  if (!ease) return video
+  const width = video.videoWidth
+  const height = video.videoHeight
+  if (width < 2 || height < 2) return video
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  const context = canvas.getContext('2d', { willReadFrequently: true })
+  if (!context) return video
+  context.drawImage(video, 0, 0, width, height)
+  const region = centerSampleRegion(width, height)
+  const sample = context.getImageData(region.x, region.y, region.width, region.height)
+  const exponent = gammaExponentForLuma(averageLuma(sample.data))
+  if (exponent === null) return video
+  const frame = context.getImageData(0, 0, width, height)
+  const pixels = frame.data
+  for (let index = 0; index < pixels.length; index += 4) {
+    pixels[index] = applyGammaByte(pixels[index], exponent)
+    pixels[index + 1] = applyGammaByte(pixels[index + 1], exponent)
+    pixels[index + 2] = applyGammaByte(pixels[index + 2], exponent)
+  }
+  context.putImageData(frame, 0, 0)
+  return canvas
+}
+
+/** 枠は明るさ補正後でも、特徴量とランドマークは元の映像から取ります。 */
+async function describeOnOriginal(
+  faceapi: FaceApi,
+  video: HTMLVideoElement,
+  detections: InstanceType<FaceApi['FaceDetection']>[],
+): Promise<LocatedFace[]> {
+  if (detections.length === 0) return []
+  const crops = await faceapi.extractFaces(video, detections)
+  const located: LocatedFace[] = []
+  for (let index = 0; index < detections.length; index += 1) {
+    const detection = detections[index]
+    const crop = crops[index]
+    if (!crop || crop.width < 1 || crop.height < 1) continue
+    const unshifted = await faceapi.detectFaceLandmarks(crop)
+    if (!unshifted || Array.isArray(unshifted)) continue
+    const withLandmarks = faceapi.extendWithFaceLandmarks({ detection }, unshifted)
+    const aligned = withLandmarks.landmarks.align(null, { useDlibAlignment: true })
+    const rect = new faceapi.Rect(aligned.x, aligned.y, aligned.width, aligned.height)
+    const [alignedCrop] = await faceapi.extractFaces(video, [rect])
+    if (!alignedCrop || alignedCrop.width < 1 || alignedCrop.height < 1) continue
+    const descriptor = await faceapi.nets.faceRecognitionNet.computeFaceDescriptor(alignedCrop)
+    if (!(descriptor instanceof Float32Array)) continue
+    located.push({
+      box: plainBox(detection.box),
+      descriptor: Array.from(descriptor),
+      landmarks: withLandmarks.landmarks.positions.map((point) => ({ x: point.x, y: point.y })),
+    })
+  }
+  return located
+}
+
+/** 設定がオフのときは従来の検出のまま、オンのときだけ暗いフレームを補正します。 */
+async function locateFaces(
+  faceapi: FaceApi,
+  video: HTMLVideoElement,
+  canvas: HTMLCanvasElement,
+  ease: boolean,
+  withIdentity: boolean,
+): Promise<LocatedFace[]> {
+  const options = new faceapi.TinyFaceDetectorOptions(detectorTune(ease))
+  const source = detectionSource(video, canvas, ease)
+  if (!withIdentity) {
+    const detections = await faceapi.detectAllFaces(source, options)
+    return detections.map((detection) => ({
+      box: plainBox(detection.box),
+      descriptor: null,
+      landmarks: null,
+    }))
+  }
+  if (source === video) {
+    const detections = await faceapi
+      .detectAllFaces(video, options)
+      .withFaceLandmarks()
+      .withFaceDescriptors()
+    return detections.map((detection) => ({
+      box: plainBox(detection.detection.box),
+      descriptor: Array.from(detection.descriptor),
+      landmarks: detection.landmarks.positions.map((point) => ({ x: point.x, y: point.y })),
+    }))
+  }
+  return describeOnOriginal(faceapi, video, await faceapi.detectAllFaces(source, options))
 }
 
 /** 再生しないまま残ったWAVを、会話の読み上げと同じ通知で回収します。 */
@@ -101,6 +224,8 @@ function cancelGazeBeats(beats: GazeBeatPlayback[], reason: string): void {
 /** 登録と監視で同じ映像を使い、会話中は視線発話を始めないようにします。 */
 export default function GazeSpeechMonitor({
   enabled,
+  faceFollow,
+  detectEase,
   enrollment,
   enrolling,
   blocked,
@@ -110,12 +235,15 @@ export default function GazeSpeechMonitor({
   onEnrolled,
   onEnrollClose,
   onStatus,
+  onFaceAngles,
+  onFaceFollowStatus,
   onAudio,
   onBeat,
   onSpoken,
   getAudioContext,
 }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const detectCanvasRef = useRef<HTMLCanvasElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const sourceRef = useRef<AudioBufferSourceNode | null>(null)
   const playingRef = useRef(false)
@@ -123,7 +251,13 @@ export default function GazeSpeechMonitor({
   const blockedRef = useRef(blocked)
   const volumeRef = useRef(volume)
   const enrollmentRef = useRef(enrollment)
+  const enabledRef = useRef(enabled)
+  const faceFollowRef = useRef(faceFollow)
+  const detectEaseRef = useRef(detectEase)
+  const detectBusyRef = useRef(false)
   const onStatusRef = useRef(onStatus)
+  const onFaceAnglesRef = useRef(onFaceAngles)
+  const onFaceFollowStatusRef = useRef(onFaceFollowStatus)
   const onAudioRef = useRef(onAudio)
   const onBeatRef = useRef(onBeat)
   const onSpokenRef = useRef(onSpoken)
@@ -132,12 +266,17 @@ export default function GazeSpeechMonitor({
   const armedRef = useRef(true)
   const [captureError, setCaptureError] = useState('')
   const [capturing, setCapturing] = useState(false)
-  const cameraNeeded = enrolling || (enabled && enrollment !== null)
+  const cameraNeeded = enrolling || (enabled && enrollment !== null) || faceFollow
 
   blockedRef.current = blocked
   volumeRef.current = volume
   enrollmentRef.current = enrollment
+  enabledRef.current = enabled
+  faceFollowRef.current = faceFollow
+  detectEaseRef.current = detectEase
   onStatusRef.current = onStatus
+  onFaceAnglesRef.current = onFaceAngles
+  onFaceFollowStatusRef.current = onFaceFollowStatus
   onAudioRef.current = onAudio
   onBeatRef.current = onBeat
   onSpokenRef.current = onSpoken
@@ -157,8 +296,10 @@ export default function GazeSpeechMonitor({
   useEffect(() => {
     if (!cameraNeeded) {
       stopCamera()
-      if (!enabled) onStatusRef.current('停止中')
-      else if (!enrollment) onStatusRef.current('顔が未登録です')
+      if (!enabledRef.current) onStatusRef.current('停止中')
+      else if (!enrollmentRef.current) onStatusRef.current('顔が未登録です')
+      if (!faceFollowRef.current) onFaceFollowStatusRef.current('停止中')
+      onFaceAnglesRef.current(null)
       return
     }
 
@@ -167,7 +308,8 @@ export default function GazeSpeechMonitor({
     let cancelled = false
 
     const start = async () => {
-      onStatusRef.current('カメラを準備しています')
+      if (enabledRef.current || enrolling) onStatusRef.current('カメラを準備しています')
+      if (faceFollowRef.current) onFaceFollowStatusRef.current('カメラを準備しています')
       try {
         await loadFaceApi()
         if (cancelled) return
@@ -182,9 +324,13 @@ export default function GazeSpeechMonitor({
         streamRef.current = stream
         video.srcObject = stream
         await video.play()
-        onStatusRef.current(enrolling ? '顔が映ったら登録できます' : '監視中')
+        if (enrolling) onStatusRef.current('顔が映ったら登録できます')
+        else if (enabledRef.current) onStatusRef.current('監視中')
+        if (faceFollowRef.current) onFaceFollowStatusRef.current('顔を探しています')
       } catch {
-        if (!cancelled) onStatusRef.current('カメラまたは顔モデルを利用できません')
+        if (cancelled) return
+        if (enabledRef.current || enrolling) onStatusRef.current('カメラまたは顔モデルを利用できません')
+        if (faceFollowRef.current) onFaceFollowStatusRef.current('カメラまたは顔モデルを利用できません')
       }
     }
     void start()
@@ -193,7 +339,7 @@ export default function GazeSpeechMonitor({
       cancelled = true
       stopCamera()
     }
-  }, [cameraNeeded, enrolling, enabled, enrollment])
+  }, [cameraNeeded, enrolling])
 
   useEffect(() => {
     if (!enabled || !enrollment || enrolling || blocked || !ttsEnabled) {
@@ -205,34 +351,56 @@ export default function GazeSpeechMonitor({
     let busy = false
 
     const tick = async () => {
-      if (stopped || busy || playingRef.current || blockedRef.current) return
+      if (stopped || busy || playingRef.current || blockedRef.current || detectBusyRef.current) return
       const video = videoRef.current
       if (!video || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) return
       busy = true
+      detectBusyRef.current = true
       try {
         const faceapi = await loadFaceApi()
-        const detections = await faceapi
-          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-          .withFaceLandmarks()
-          .withFaceDescriptors()
+        if (!detectCanvasRef.current) detectCanvasRef.current = document.createElement('canvas')
+        const faces = await locateFaces(faceapi, video, detectCanvasRef.current, detectEaseRef.current, true)
         if (stopped) return
-        if (detections.length !== 1) {
+        if (faceFollowRef.current) {
+          const followed = enrollmentRef.current
+          const box = chooseFollowBox(faces.map((face) => ({
+            box: face.box,
+            distance: followed && face.descriptor
+              ? descriptorDistance(followed.descriptor, face.descriptor)
+              : null,
+          })), followed !== null, GAZE_MATCH_DISTANCE)
+          if (!box) {
+            onFaceAnglesRef.current(null)
+            onFaceFollowStatusRef.current(followed ? '登録した顔が見つかりません' : '顔が見つかりません')
+          } else {
+            const angles = faceFollowAngles(box, video.videoWidth, video.videoHeight)
+            onFaceAnglesRef.current(angles)
+            onFaceFollowStatusRef.current(angles ? '顔の位置に合わせています' : '顔の位置を読めませんでした')
+          }
+        }
+        if (faces.length !== 1) {
           lookSinceRef.current = null
           armedRef.current = true
-          onStatusRef.current(detections.length === 0 ? '顔が見つかりません' : '顔が複数あります')
+          onStatusRef.current(faces.length === 0 ? '顔が見つかりません' : '顔が複数あります')
           return
         }
         const currentEnrollment = enrollmentRef.current
         if (!currentEnrollment) return
-        const detection = detections[0]
-        const distance = descriptorDistance(currentEnrollment.descriptor, Array.from(detection.descriptor))
+        const face = faces[0]
+        if (!face.descriptor || !face.landmarks) {
+          lookSinceRef.current = null
+          armedRef.current = true
+          onStatusRef.current('顔の位置を読み取れませんでした')
+          return
+        }
+        const distance = descriptorDistance(currentEnrollment.descriptor, face.descriptor)
         if (distance > GAZE_MATCH_DISTANCE) {
           lookSinceRef.current = null
           armedRef.current = true
           onStatusRef.current('登録した顔と一致しません')
           return
         }
-        const pose = poseFromLandmarks(detection.landmarks.positions)
+        const pose = poseFromLandmarks(face.landmarks)
         const looking = pose !== null
           && Math.abs(pose.yaw - currentEnrollment.yaw) <= GAZE_YAW_TOLERANCE
           && Math.abs(pose.pitch - currentEnrollment.pitch) <= GAZE_PITCH_TOLERANCE
@@ -258,6 +426,7 @@ export default function GazeSpeechMonitor({
         if (!stopped) onStatusRef.current('顔の確認に失敗しました')
       } finally {
         busy = false
+        detectBusyRef.current = false
       }
     }
 
@@ -272,6 +441,67 @@ export default function GazeSpeechMonitor({
     if (enabled && enrollment && !ttsEnabled) onStatusRef.current('音声合成が無効です')
   }, [enabled, enrollment, ttsEnabled])
 
+  useEffect(() => {
+    const gazeOwnsCamera = enabled && enrollment !== null && !enrolling && !blocked && ttsEnabled
+    if (!faceFollow || enrolling || gazeOwnsCamera) {
+      if (!faceFollow || enrolling) onFaceAnglesRef.current(null)
+      if (!faceFollow) onFaceFollowStatusRef.current('停止中')
+      return
+    }
+    let stopped = false
+
+    const publish = (box: { x: number, y: number, width: number, height: number } | null, video: HTMLVideoElement) => {
+      if (!box) {
+        onFaceAnglesRef.current(null)
+        onFaceFollowStatusRef.current(enrollmentRef.current ? '登録した顔が見つかりません' : '顔が見つかりません')
+        return
+      }
+      const angles = faceFollowAngles(box, video.videoWidth, video.videoHeight)
+      onFaceAnglesRef.current(angles)
+      onFaceFollowStatusRef.current(angles ? '顔の位置に合わせています' : '顔の位置を読めませんでした')
+    }
+
+    const tick = async () => {
+      if (stopped || detectBusyRef.current) return
+      const video = videoRef.current
+      if (!video || video.readyState < HTMLMediaElement.HAVE_ENOUGH_DATA) return
+      detectBusyRef.current = true
+      try {
+        const faceapi = await loadFaceApi()
+        const currentEnrollment = enrollmentRef.current
+        if (!detectCanvasRef.current) detectCanvasRef.current = document.createElement('canvas')
+        const faces = await locateFaces(
+          faceapi,
+          video,
+          detectCanvasRef.current,
+          detectEaseRef.current,
+          currentEnrollment !== null,
+        )
+        if (stopped) return
+        publish(chooseFollowBox(faces.map((face) => ({
+          box: face.box,
+          distance: currentEnrollment && face.descriptor
+            ? descriptorDistance(currentEnrollment.descriptor, face.descriptor)
+            : null,
+        })), currentEnrollment !== null, GAZE_MATCH_DISTANCE), video)
+      } catch {
+        if (!stopped) {
+          onFaceAnglesRef.current(null)
+          onFaceFollowStatusRef.current('顔の位置を読めませんでした')
+        }
+      } finally {
+        detectBusyRef.current = false
+      }
+    }
+
+    const timer = window.setInterval(() => void tick(), 200)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+      if (!faceFollowRef.current) onFaceAnglesRef.current(null)
+    }
+  }, [blocked, enabled, enrolling, enrollment, faceFollow, ttsEnabled])
+
   /** 今映っている顔を数枚重ね、登録時の向きを基準として保存します。 */
   const captureFace = async () => {
     const video = videoRef.current
@@ -281,21 +511,20 @@ export default function GazeSpeechMonitor({
     try {
       const faceapi = await loadFaceApi()
       const samples: FaceSample[] = []
+      if (!detectCanvasRef.current) detectCanvasRef.current = document.createElement('canvas')
       for (let index = 0; index < 5; index += 1) {
-        const detections = await faceapi
-          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-          .withFaceLandmarks()
-          .withFaceDescriptors()
-        if (detections.length !== 1) {
+        const faces = await locateFaces(faceapi, video, detectCanvasRef.current, detectEaseRef.current, true)
+        const face = faces[0]
+        if (faces.length !== 1 || !face?.descriptor || !face.landmarks) {
           setCaptureError('顔が一つだけ映る位置で登録してください。')
           return
         }
-        const pose = poseFromLandmarks(detections[0].landmarks.positions)
+        const pose = poseFromLandmarks(face.landmarks)
         if (!pose) {
           setCaptureError('顔の位置を読み取れませんでした。')
           return
         }
-        samples.push({ descriptor: Array.from(detections[0].descriptor), ...pose })
+        samples.push({ descriptor: face.descriptor, ...pose })
         await new Promise((resolve) => window.setTimeout(resolve, 120))
       }
       const first = samples[0].descriptor

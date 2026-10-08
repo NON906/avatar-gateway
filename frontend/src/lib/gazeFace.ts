@@ -11,7 +11,13 @@ export interface GazeEnrollment {
 
 export interface GazeSettings {
   enabled: boolean
+  faceFollow: boolean
+  detectEase: boolean
   enrollment: GazeEnrollment | null
+}
+
+function defaultGazeSettings(): GazeSettings {
+  return { enabled: false, faceFollow: false, detectEase: false, enrollment: null }
 }
 
 interface Point {
@@ -28,14 +34,16 @@ export const GAZE_DWELL_MS = 700
 export function readGazeSettings(storage: Storage): GazeSettings {
   try {
     const raw = storage.getItem(STORAGE_KEY)
-    if (!raw) return { enabled: false, enrollment: null }
+    if (!raw) return defaultGazeSettings()
     const parsed = JSON.parse(raw) as Record<string, unknown>
     return {
       enabled: parsed.enabled === true,
+      faceFollow: parsed.faceFollow === true,
+      detectEase: parsed.detectEase === true,
       enrollment: readEnrollment(parsed.enrollment),
     }
   } catch {
-    return { enabled: false, enrollment: null }
+    return defaultGazeSettings()
   }
 }
 

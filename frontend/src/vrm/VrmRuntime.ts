@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { VRMHumanBoneList, type VRM, type VRMHumanBoneName } from '@pixiv/three-vrm'
 
 import type { AvatarMotionConfig } from '../config/avatar'
+import { createFaceFollowPose, stepFaceFollow, type FaceFollowAngles, type FaceFollowPose } from '../lib/faceFollow'
 import type {
   AvatarExpression,
   AvatarMorphExpression,
@@ -114,6 +115,8 @@ export class VrmRuntime {
   private saccadeTimer = 0
   private saccadeYaw = 0
   private saccadePitch = 0
+  private faceFollowTarget: FaceFollowAngles | null = null
+  private faceFollowPose: FaceFollowPose = createFaceFollowPose()
   private faceHeat = 0
 
   constructor(private readonly vrm: VRM, private readonly config: AvatarMotionConfig) {
@@ -135,6 +138,11 @@ export class VrmRuntime {
   /** 健康確認APIの設定を描画ループへ渡し、モデルを再読み込みせずに瞬き抑制を切り替えます。 */
   setSuppressBlinkDuringExpression(enabled: boolean): void {
     this.suppressBlinkDuringExpression = enabled
+  }
+
+  /** カメラ上の顔の位置を描画ループへ渡します。見失った直後は向きを保ちます。 */
+  setFaceFollow(target: FaceFollowAngles | null): void {
+    this.faceFollowTarget = target
   }
 
   /** VRM0/1とカスタム名の差をロード時に吸収し、描画中は検証済みの実名だけを使います。 */
@@ -274,6 +282,7 @@ export class VrmRuntime {
     this.basePoseWeight = THREE.MathUtils.lerp(this.basePoseWeight, 1, blend)
 
     this.applyPrimaryPose()
+    this.updateFaceFollow(delta)
     this.updateGaze(delta)
     this.updateBody(delta, elapsed)
     this.updateExpressions(delta, elapsed)
@@ -354,8 +363,20 @@ export class VrmRuntime {
     const headYaw = this.noise.perlin2(elapsed * motion.headYawTimeScale, 560) * motion.headYawDegrees
     const headTilt = this.noise.perlin2(elapsed * motion.headTiltTimeScale, 840) * motion.headTiltDegrees
     const neckTilt = this.noise.perlin2(elapsed * motion.headTiltTimeScale, 917) * motion.headTiltDegrees * 0.5
-    this.applyProceduralRotation('neck', 0, 0, radians(neckTilt) * weight)
-    this.applyProceduralRotation('head', 0, radians(headYaw) * weight, radians(headTilt) * weight)
+    const follow = this.faceFollowPose.weight * THREE.MathUtils.lerp(1, 0.45, this.primaryMotionWeight)
+    const idle = 1 - this.faceFollowPose.weight
+    this.applyProceduralRotation(
+      'neck',
+      radians(this.faceFollowPose.headPitch * 0.35) * follow,
+      radians(this.faceFollowPose.headYaw * 0.4) * follow,
+      radians(neckTilt) * weight * idle,
+    )
+    this.applyProceduralRotation(
+      'head',
+      radians(this.faceFollowPose.headPitch) * follow,
+      radians(headYaw * weight * idle + this.faceFollowPose.headYaw * follow),
+      radians(headTilt) * weight * idle,
+    )
 
     // 調整済みの±76度をBase Poseとし、発話中は上に重ねる腕の微動だけを弱めます。
     const armWeight = weight * (this.state === 'speaking' ? 0.45 : 1)
@@ -647,6 +668,11 @@ export class VrmRuntime {
     node.quaternion.multiply(procedural)
   }
 
+  /** 顔の位置へ滑らかに寄せます。見失ってもすぐには戻さず、向きを保ってから影響だけを抜きます。 */
+  private updateFaceFollow(delta: number): void {
+    stepFaceFollow(this.faceFollowPose, this.faceFollowTarget, delta)
+  }
+
   /** VRM標準LookAtへ角度を渡し、骨型・表情型のどちらでも約5度のサッカードを出します。 */
   private updateGaze(delta: number): void {
     const lookAt = this.vrm.lookAt
@@ -658,9 +684,11 @@ export class VrmRuntime {
       this.saccadeTimer = 0
     }
     this.saccadeTimer += delta
-    const weight = THREE.MathUtils.lerp(1, 0.2, this.primaryMotionWeight)
-    lookAt.yaw = this.saccadeYaw * weight
-    lookAt.pitch = this.saccadePitch * weight
+    const attention = THREE.MathUtils.lerp(1, 0.2, this.primaryMotionWeight)
+    const follow = this.faceFollowPose.weight
+    const idle = 1 - follow * 0.85
+    lookAt.yaw = this.saccadeYaw * attention * idle + this.faceFollowPose.lookYaw * follow
+    lookAt.pitch = this.saccadePitch * attention * idle + this.faceFollowPose.lookPitch * follow
   }
 
   /** 状態表情と瞬きを滑らかに合成し、切替時の顔の跳ねを防ぎます。 */

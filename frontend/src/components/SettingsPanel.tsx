@@ -34,7 +34,12 @@ interface Props {
   gazeStatus: string
   gazePending: number | null
   gazeJobFound: boolean | null
+  faceFollow: boolean
+  faceFollowStatus: string
+  detectEase: boolean
   onGazeEnabled: (enabled: boolean) => void
+  onFaceFollow: (enabled: boolean) => void
+  onDetectEase: (enabled: boolean) => void
   onGazeEnroll: () => void
   onGazeClear: () => void
   onChange: (changes: UiSettingsOverrides) => void
@@ -58,7 +63,12 @@ export default function SettingsPanel({
   gazeStatus,
   gazePending,
   gazeJobFound,
+  faceFollow,
+  faceFollowStatus,
+  detectEase,
   onGazeEnabled,
+  onFaceFollow,
+  onDetectEase,
   onGazeEnroll,
   onGazeClear,
   onChange,
@@ -320,6 +330,39 @@ export default function SettingsPanel({
             {gazeStatus ? ` 状態: ${gazeStatus}` : ''}
             {' '}ブラウザ設定のリセットでは、この顔登録は消えません。
           </small>
+        </section>
+
+        <section className="ui-settings-section">
+          <h3>顔の位置を見る</h3>
+          <p>ウェブカメラに映った顔の位置へ、視線と顔の向きを向けます。画像は保存しません。</p>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={faceFollow}
+              onChange={(event) => onFaceFollow(event.target.checked)}
+            />
+            <span>
+              <strong>顔の位置に合わせる</strong>
+              <small>登録した顔があるときはその人だけを見ます。未登録のときは、いちばん大きく映っている顔を見ます。</small>
+            </span>
+          </label>
+          {faceFollow && <small>状態: {faceFollowStatus}</small>}
+        </section>
+
+        <section className="ui-settings-section">
+          <h3>顔の検出</h3>
+          <p>暗いときだけ、検出用の画面の明るさを上げます。表示には出さず、画像も保存しません。本人かどうかの判定は変えません。</p>
+          <label className="settings-toggle">
+            <input
+              type="checkbox"
+              checked={detectEase}
+              onChange={(event) => onDetectEase(event.target.checked)}
+            />
+            <span>
+              <strong>検出を見やすくする</strong>
+              <small>視線発話、顔の位置を見る、顔の登録で使います。明るい映像はそのままです。</small>
+            </span>
+          </label>
         </section>
 
         <section className="ui-settings-section">

@@ -7,6 +7,7 @@ import { TransformControls, type TransformControlsMode } from 'three/examples/js
 import { VRM, VRMLoaderPlugin, VRMUtils } from '@pixiv/three-vrm'
 
 import { defaultAvatarCamera, defaultAvatarMotion } from '../config/avatar'
+import type { FaceFollowAngles } from '../lib/faceFollow'
 import type {
   AvatarExpression,
   AvatarState,
@@ -54,6 +55,7 @@ interface Props {
   onTouchHitboxProfileChange: (modelKey: string, profile: UiTouchHitboxProfile) => void
   onVrmTouchDetected: () => void
   onVrmTouch: (input: VrmTouchInput) => void
+  faceFollowRef: { current: FaceFollowAngles | null }
 }
 
 interface HitboxEditorPosition {
@@ -132,6 +134,7 @@ export default function VrmStage({
   onTouchHitboxProfileChange,
   onVrmTouchDetected,
   onVrmTouch,
+  faceFollowRef,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const hitboxEditorRef = useRef<HTMLDivElement>(null)
@@ -825,6 +828,7 @@ export default function VrmStage({
         runtime.setStaticPrimaryPose(playerRef.current?.getStaticPose() ?? null)
         runtime.setInputs(stateRef.current, analyserRef.current, expressionRef.current)
         runtime.setSuppressBlinkDuringExpression(suppressBlinkDuringExpressionRef.current)
+        runtime.setFaceFollow(faceFollowRef.current)
         runtime.update(delta, clock.elapsedTime)
       }
       castOffControllerRef.current?.update(delta)

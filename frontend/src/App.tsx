@@ -15,6 +15,7 @@ import VoiceInputControl from './components/VoiceInputControl'
 import VrmStage from './components/VrmStage'
 import { advanceActiveRun, clearActiveRun, readActiveRun, saveActiveRun } from './lib/activeRun'
 import { readDisplayMode, saveDisplayMode } from './lib/displayMode'
+import type { FaceFollowAngles } from './lib/faceFollow'
 import { readGazeSettings, writeGazeSettings } from './lib/gazeFace'
 import { appendGazeTranscript } from './lib/gazeTranscript'
 import { readSessionMessages, readSessionSummary } from './lib/session'
@@ -581,6 +582,8 @@ export default function App() {
   const [gazeSettings, setGazeSettings] = useState(() => readGazeSettings(localStorage))
   const [gazeEnrolling, setGazeEnrolling] = useState(false)
   const [gazeStatus, setGazeStatus] = useState('停止中')
+  const [faceFollowStatus, setFaceFollowStatus] = useState('停止中')
+  const faceFollowRef = useRef<FaceFollowAngles | null>(null)
   const [gazePending, setGazePending] = useState<number | null>(null)
   const [gazeJobFound, setGazeJobFound] = useState<boolean | null>(null)
   const [gazeRefresh, setGazeRefresh] = useState(0)
@@ -1706,9 +1709,12 @@ export default function App() {
     setAvatarState(gazeAnalyser ? 'speaking' : 'idle')
   }
 
-  const updateGazeSettings = (next: typeof gazeSettings) => {
-    setGazeSettings(next)
-    writeGazeSettings(localStorage, next)
+  const updateGazeSettings = (next: typeof gazeSettings | ((current: typeof gazeSettings) => typeof gazeSettings)) => {
+    setGazeSettings((current) => {
+      const resolved = typeof next === 'function' ? next(current) : next
+      writeGazeSettings(localStorage, resolved)
+      return resolved
+    })
   }
 
   return (
@@ -1757,6 +1763,7 @@ export default function App() {
             current?.id === id ? null : current
           ))}
           onCameraChange={setCurrentCamera}
+          faceFollowRef={faceFollowRef}
           onTouchHitboxProfileChange={handleTouchHitboxProfileChange}
           onVrmTouchDetected={activateAudioContext}
           onVrmTouch={handleVrmTouch}
@@ -1941,6 +1948,14 @@ export default function App() {
             gazePending={gazePending}
             gazeJobFound={gazeJobFound}
             onGazeEnabled={(enabled) => updateGazeSettings({ ...gazeSettings, enabled })}
+            faceFollow={gazeSettings.faceFollow}
+            faceFollowStatus={faceFollowStatus}
+            detectEase={gazeSettings.detectEase}
+            onFaceFollow={(enabled) => {
+              if (!enabled) faceFollowRef.current = null
+              updateGazeSettings({ ...gazeSettings, faceFollow: enabled })
+            }}
+            onDetectEase={(enabled) => updateGazeSettings({ ...gazeSettings, detectEase: enabled })}
             onGazeEnroll={() => setGazeEnrolling(true)}
             onGazeClear={() => updateGazeSettings({ ...gazeSettings, enrollment: null })}
           />
@@ -2028,6 +2043,8 @@ export default function App() {
         )}
         <GazeSpeechMonitor
           enabled={gazeSettings.enabled}
+          faceFollow={gazeSettings.faceFollow}
+          detectEase={gazeSettings.detectEase}
           enrollment={gazeSettings.enrollment}
           enrolling={gazeEnrolling}
           blocked={conversationActive}
@@ -2035,11 +2052,15 @@ export default function App() {
           volume={uiSettings.speech_volume}
           stopRef={gazeStopRef}
           onEnrolled={(enrollment) => {
-            updateGazeSettings({ enabled: true, enrollment })
+            updateGazeSettings((current) => ({ ...current, enabled: true, enrollment }))
             setGazeStatus('顔を登録しました')
           }}
           onEnrollClose={() => setGazeEnrolling(false)}
           onStatus={setGazeStatus}
+          onFaceAngles={(angles) => {
+            faceFollowRef.current = angles
+          }}
+          onFaceFollowStatus={setFaceFollowStatus}
           onAudio={handleGazeAudio}
           onSpoken={() => setGazeRefresh((current) => current + 1)}
           onBeat={(data) => {
