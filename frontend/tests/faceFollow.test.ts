@@ -35,8 +35,8 @@ assert.ok(right.headYaw < -14)
 
 const above = faceFollowAngles({ x: 300, y: 0, width: 40, height: 40 }, 640, 480)
 assert.ok(above)
-assert.ok(above.lookPitch < 0)
-assert.ok(above.headPitch < 0)
+assert.ok(above.lookPitch > 0)
+assert.ok(above.headPitch > 0)
 assert.equal(above.lookYaw, 0)
 
 assert.equal(faceFollowAngles({ x: 0, y: 0, width: 0, height: 10 }, 640, 480), null)

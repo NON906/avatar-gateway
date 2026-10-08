@@ -64,8 +64,8 @@ export function faceFollowAngles(
   const vertical = shapeOffset((centerY / frameHeight) * 2 - 1)
   // カメラ映像の左は、向き合っている相手の右です。正面を向いた顔の左を見るので、ヨーは正にします。
   const yaw = -horizontal
-  // 映像の上は相手が高い位置です。ピッチの負は上を見ます。
-  const pitch = vertical
+  // 画面の上に顔があるときは上を向く。そのままのYだと上下が逆に見えるので、ピッチの符号を反転する。
+  const pitch = -vertical
   return {
     lookYaw: normalizeAngle(yaw * FACE_FOLLOW_LOOK_YAW_DEGREES),
     lookPitch: normalizeAngle(pitch * FACE_FOLLOW_LOOK_PITCH_DEGREES),
