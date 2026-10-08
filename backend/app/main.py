@@ -341,6 +341,7 @@ async def health() -> dict:
         },
         "vrm_available": vrm_path is not None,
         "vrm_url": vrm_url,
+        "suppress_blink_during_expression": settings.suppress_blink_during_expression,
         "motions": [motion.to_public_dict() for motion in motion_catalog.motions],
         "generating_motion": (
             motion_catalog.generating_motion.name if motion_catalog.generating_motion else None

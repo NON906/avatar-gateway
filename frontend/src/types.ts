@@ -55,6 +55,7 @@ export interface Health {
   }
   vrm_available: boolean
   vrm_url: string | null
+  suppress_blink_during_expression: boolean
   motions: MotionCatalogItem[]
   generating_motion: string | null
   motion_catalog_error: string | null

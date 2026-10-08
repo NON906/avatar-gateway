@@ -60,6 +60,11 @@ class Settings:
     stt_local_files_only: bool = _as_bool(os.getenv("FASTER_WHISPER_LOCAL_FILES_ONLY"), True)
     stt_max_audio_bytes: int = int(os.getenv("FASTER_WHISPER_MAX_AUDIO_BYTES", str(16 * 1024 * 1024)))
     vrm_file: str = os.getenv("AVATAR_VRM_FILE", "はむ子.vrm")
+    # 表情ブレンドと瞬きモーフが重なると崩れるVRM向けに、切替中のまばたきを止めます。
+    suppress_blink_during_expression: bool = _as_bool(
+        os.getenv("AVATAR_SUPPRESS_BLINK_DURING_EXPRESSION"),
+        False,
+    )
     bundled_assets_dir: Path = PROJECT_ROOT / "assets"
     local_assets_dir: Path = PROJECT_ROOT / "local-assets"
     motion_catalog_file: Path = PROJECT_ROOT / "config" / "motions.json"
