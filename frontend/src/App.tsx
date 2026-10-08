@@ -1737,6 +1737,7 @@ export default function App() {
           vrmModelKey={activeVrmModelKey}
           avatarState={avatarState}
           avatarExpression={avatarExpression}
+          suppressBlinkDuringExpression={health?.suppress_blink_during_expression ?? false}
           analyser={analyser}
           motionCommand={motionCommand}
           showCameraHelp={displayMode === 'standard' && uiSettings.show_camera_help}

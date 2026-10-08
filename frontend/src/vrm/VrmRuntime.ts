@@ -10,6 +10,7 @@ import type {
   VrmTouchColliderId,
   VrmTouchRegion,
 } from '../types'
+import { shouldHoldBlinkDuringExpression } from './expressionBlinkGate'
 import { PerlinNoise2D } from './PerlinNoise2D'
 import type { PrimaryMotionKind, StaticVrmPose } from './VrmaPlayer'
 
@@ -104,6 +105,7 @@ export class VrmRuntime {
   private touchFollowX = 0
   private touchFollowY = 0
   private blinkActive = false
+  private suppressBlinkDuringExpression = false
   private blinkStartedAt = 0
   private blinkDuration = 0.3
   private blinkMode: BlinkMode = 'close'
@@ -128,6 +130,11 @@ export class VrmRuntime {
     this.state = state
     this.analyser = analyser
     this.agentExpression = expression
+  }
+
+  /** 健康確認APIの設定を描画ループへ渡し、モデルを再読み込みせずに瞬き抑制を切り替えます。 */
+  setSuppressBlinkDuringExpression(enabled: boolean): void {
+    this.suppressBlinkDuringExpression = enabled
   }
 
   /** VRM0/1とカスタム名の差をロード時に吸収し、描画中は検証済みの実名だけを使います。 */
@@ -662,17 +669,21 @@ export class VrmRuntime {
     if (!manager) return
     const blend = 1 - Math.exp(-5 * delta)
     const targets = this.config.expressions[this.state]
+    // shyは専用モーフを要求せず、参照実装と同じくhappy表情へ赤面を重ねます。
+    const selectedExpression = this.agentExpression === 'shy' ? 'happy' : this.agentExpression
+    const weightGaps: number[] = []
     for (const name of EXPRESSION_NAMES) {
       const current = this.expressionValues.get(name) ?? 0
-      // shyは専用モーフを要求せず、参照実装と同じくhappy表情へ赤面を重ねます。
-      const selectedExpression = this.agentExpression === 'shy' ? 'happy' : this.agentExpression
       const agentTarget = selectedExpression === name ? this.config.agentExpressionWeights[name] : 0
-      const next = THREE.MathUtils.lerp(current, Math.max(targets[name] ?? 0, agentTarget), blend)
+      const target = Math.max(targets[name] ?? 0, agentTarget)
+      weightGaps.push(Math.abs(current - target))
+      const next = THREE.MathUtils.lerp(current, target, blend)
       this.expressionValues.set(name, next)
       const resolved = this.resolvedExpressionNames.get(name)
       if (resolved) manager.setValue(resolved, next)
     }
-    this.updateBlink(manager, delta, elapsed)
+    const holdBlink = shouldHoldBlinkDuringExpression(this.suppressBlinkDuringExpression, weightGaps)
+    this.updateBlink(manager, delta, elapsed, holdBlink)
   }
 
   /** 顔または頭のメッシュが使う色付きマテリアルと、変更前の基準色を保存します。 */
@@ -711,7 +722,19 @@ export class VrmRuntime {
   }
 
   /** Perlinで頻度を揺らし、通常・浅い・片目の3種類から瞬きを選びます。 */
-  private updateBlink(manager: NonNullable<VRM['expressionManager']>, delta: number, elapsed: number): void {
+  private updateBlink(
+    manager: NonNullable<VRM['expressionManager']>,
+    delta: number,
+    elapsed: number,
+    holdBlink: boolean,
+  ): void {
+    // 表情モーフの移動中に瞬きを重ねると崩れるVRMでは、切替が終わるまで目を開けたままにします。
+    if (holdBlink) {
+      this.blinkActive = false
+      this.applyBlink(manager, 0, 0)
+      return
+    }
+
     const config = this.config.blink
     if (!this.blinkActive) {
       const noise = this.noise.perlin2(elapsed * config.noiseTimeScale, 220)
@@ -741,15 +764,20 @@ export class VrmRuntime {
       }
     }
 
+    this.applyBlink(manager, left, right)
+  }
+
+  /** 左右別モーフがあるモデルと、単一blinkだけのモデルで同じ開閉量を反映します。 */
+  private applyBlink(manager: NonNullable<VRM['expressionManager']>, left: number, right: number): void {
     const hasSeparateEyes = manager.getExpression('blinkLeft') != null
       && manager.getExpression('blinkRight') != null
     if (hasSeparateEyes) {
       manager.setValue('blink', 0)
       manager.setValue('blinkLeft', left)
       manager.setValue('blinkRight', right)
-    } else {
-      manager.setValue('blink', Math.max(left, right))
+      return
     }
+    manager.setValue('blink', Math.max(left, right))
   }
 
   /** 瞬き時間、カーブ、片目の左右を毎回変え、繰り返し感を弱めます。 */

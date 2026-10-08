@@ -94,6 +94,7 @@ async def test_health_returns_runtime_capabilities(
             main_module.settings,
             hermes_api_key="test-secret",
             vrm_file="はむ子.vrm",
+            suppress_blink_during_expression=True,
             stt_model_dir=tmp_path / "whisper",
             local_assets_dir=tmp_path / "local-assets",
         ),
@@ -112,6 +113,14 @@ async def test_health_returns_runtime_capabilities(
     }
     assert response["vrm_available"] is True
     assert response["vrm_url"] == "/assets/vrm/はむ子.vrm"
+    assert response["suppress_blink_during_expression"] is True
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, suppress_blink_during_expression=False),
+    )
+    disabled = await health()
+    assert disabled["suppress_blink_during_expression"] is False
     assert response["generating_motion"] == "hands_behind_back"
     assert {motion["name"] for motion in response["motions"]} == {
         "nod",

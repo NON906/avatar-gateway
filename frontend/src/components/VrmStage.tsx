@@ -33,6 +33,7 @@ interface Props {
   vrmModelKey: string | null
   avatarState: AvatarState
   avatarExpression: AvatarExpression
+  suppressBlinkDuringExpression: boolean
   analyser: AnalyserNode | null
   motionCommand: MotionCommand | null
   showCameraHelp: boolean
@@ -110,6 +111,7 @@ export default function VrmStage({
   vrmModelKey,
   avatarState,
   avatarExpression,
+  suppressBlinkDuringExpression,
   analyser,
   motionCommand,
   showCameraHelp,
@@ -136,6 +138,7 @@ export default function VrmStage({
   const hitboxEditorDragRef = useRef<{ pointerId: number, offsetX: number, offsetY: number } | null>(null)
   const stateRef = useRef(avatarState)
   const expressionRef = useRef(avatarExpression)
+  const suppressBlinkDuringExpressionRef = useRef(suppressBlinkDuringExpression)
   const analyserRef = useRef(analyser)
   const playerRef = useRef<VrmaPlayer | null>(null)
   const statusCallbackRef = useRef(onMotionStatus)
@@ -238,8 +241,9 @@ export default function VrmStage({
   useEffect(() => {
     stateRef.current = avatarState
     expressionRef.current = avatarExpression
+    suppressBlinkDuringExpressionRef.current = suppressBlinkDuringExpression
     analyserRef.current = analyser
-  }, [avatarState, avatarExpression, analyser])
+  }, [avatarState, avatarExpression, suppressBlinkDuringExpression, analyser])
 
   useEffect(() => {
     statusCallbackRef.current = onMotionStatus
@@ -820,6 +824,7 @@ export default function VrmStage({
         runtime.setPrimaryMotionKind(playerRef.current?.getMotionKind() ?? null)
         runtime.setStaticPrimaryPose(playerRef.current?.getStaticPose() ?? null)
         runtime.setInputs(stateRef.current, analyserRef.current, expressionRef.current)
+        runtime.setSuppressBlinkDuringExpression(suppressBlinkDuringExpressionRef.current)
         runtime.update(delta, clock.elapsedTime)
       }
       castOffControllerRef.current?.update(delta)
