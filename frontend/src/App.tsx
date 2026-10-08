@@ -16,6 +16,7 @@ import VrmStage from './components/VrmStage'
 import { advanceActiveRun, clearActiveRun, readActiveRun, saveActiveRun } from './lib/activeRun'
 import { readDisplayMode, saveDisplayMode } from './lib/displayMode'
 import { readGazeSettings, writeGazeSettings } from './lib/gazeFace'
+import { appendGazeTranscript } from './lib/gazeTranscript'
 import { readSessionMessages, readSessionSummary } from './lib/session'
 import { consumeSse } from './lib/sse'
 import {
@@ -583,6 +584,7 @@ export default function App() {
   const [gazePending, setGazePending] = useState<number | null>(null)
   const [gazeJobFound, setGazeJobFound] = useState<boolean | null>(null)
   const [gazeRefresh, setGazeRefresh] = useState(0)
+  const [gazeTranscript, setGazeTranscript] = useState('')
   const logRef = useRef<HTMLDivElement>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const activeSessionRef = useRef<ConversationSession | null>(null)
@@ -913,6 +915,7 @@ export default function App() {
     sessionStorage.setItem(HERMES_SESSION_STORAGE_KEY, sessionId)
     setHermesSessionId(sessionId)
     setMessages(formalMessages)
+    setGazeTranscript('')
     setInput('')
     setToolTimeline([])
     setApprovalRequest(null)
@@ -952,6 +955,7 @@ export default function App() {
       clearActiveRun()
       setHermesSessionId(null)
       setMessages([])
+      setGazeTranscript('')
       setInput('')
       setToolTimeline([])
       setApprovalRequest(null)
@@ -1318,7 +1322,7 @@ export default function App() {
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: 'smooth' })
-  }, [messages, toolTimeline, approvalRequest?.id, approvalRequest?.status, recoveryNotice, error])
+  }, [messages, gazeTranscript, toolTimeline, approvalRequest?.id, approvalRequest?.status, recoveryNotice, error])
 
   useLayoutEffect(() => {
     // 会話モードや別パネルから標準画面へ戻った際、再生成された会話欄を末尾から表示します。
@@ -1413,6 +1417,7 @@ export default function App() {
 
     conversationActiveRef.current = true
     gazeStopRef.current?.()
+    setGazeTranscript('')
 
     // 通常送信ではこの場で、ふれあいでは先行タップ時に同じContextを有効化済みです。
     const audioContext = activateAudioContext()
@@ -1901,7 +1906,7 @@ export default function App() {
         {displayMode === 'conversation' ? (
           <div className="conversation-mode-content">
             <ConversationActivityOverlay phase={conversationActivityPhase} tools={toolTimeline} />
-            <ConversationModeOverlay messages={messages} avatarState={avatarState} />
+            <ConversationModeOverlay messages={messages} avatarState={avatarState} gazeText={gazeTranscript} />
             {recoveryNotice && <p className="recovery-message" role="status">{recoveryNotice}</p>}
             <ApprovalPanel request={approvalRequest} onRespond={respondToApproval} />
             {error && <p className="error-message">{error}</p>}
@@ -1941,7 +1946,7 @@ export default function App() {
         ) : (
           <div className="conversation-scroll" ref={logRef}>
             <div className="messages" aria-live="polite">
-              {messages.length === 0 && <div className="welcome"><h2>こんにちは</h2><p>下の欄からHermesへ話しかけてください。</p></div>}
+              {messages.length === 0 && !gazeTranscript.trim() && <div className="welcome"><h2>こんにちは</h2><p>下の欄からHermesへ話しかけてください。</p></div>}
               {messages.map((message, index) => (
                 <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
                   <span>{message.role === 'user' ? 'あなた' : 'Hermes'}</span>
@@ -1952,6 +1957,12 @@ export default function App() {
                   )}
                 </article>
               ))}
+              {gazeTranscript.trim() && (
+                <article className="message assistant">
+                  <span>Hermes</span>
+                  <MarkdownMessage content={gazeTranscript} />
+                </article>
+              )}
             </div>
             {recoveryNotice && <p className="recovery-message" role="status">{recoveryNotice}</p>}
             <ToolTimeline runState={agentRunState} items={toolTimeline} />
@@ -2037,6 +2048,11 @@ export default function App() {
               automaticMotionRef.current = null
               setMotionCommand((current) => ({ id: (current?.id ?? 0) + 1, action: 'stop' }))
               return
+            }
+            const spoken = typeof data.text === 'string' ? data.text : ''
+            const beatIndex = typeof data.beatIndex === 'number' ? data.beatIndex : 0
+            if (spoken.trim()) {
+              setGazeTranscript((current) => appendGazeTranscript(current, spoken, beatIndex))
             }
             const motion = readSpeechMotion(data, configuredMotions)
             setAvatarExpression(readSpeechExpression(data))

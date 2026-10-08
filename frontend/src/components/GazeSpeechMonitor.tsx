@@ -69,6 +69,7 @@ function notifySpeech(type: string, utteranceId: string, extra: Record<string, u
 interface GazeBeatPlayback {
   utteranceId: string
   audioUrl: string
+  text: string
   motion: unknown
   expression: unknown
 }
@@ -84,6 +85,7 @@ function readGazeBeats(payload: Record<string, unknown>): GazeBeatPlayback[] {
     beats.push({
       utteranceId: beat.utterance_id,
       audioUrl: beat.audio_url,
+      text: typeof beat.text === 'string' ? beat.text : '',
       motion: beat.motion ?? null,
       expression: beat.expression ?? 'neutral',
     })
@@ -356,7 +358,12 @@ export default function GazeSpeechMonitor({
           completedAll = false
           break
         }
-        onBeatRef.current({ motion: beat.motion, expression: beat.expression })
+        onBeatRef.current({
+          motion: beat.motion,
+          expression: beat.expression,
+          text: beat.text,
+          beatIndex: index,
+        })
         acted = true
         unplayed = beats.slice(index + 1)
         const completed = await playBuffer(context, buffer, beat.utteranceId, index < beats.length - 1)
