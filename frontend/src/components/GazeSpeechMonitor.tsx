@@ -24,6 +24,8 @@ import {
   poseFromLandmarks,
   type GazeEnrollment,
 } from '../lib/gazeFace'
+import { nextSilentGazeReaction, SILENT_GAZE_HOLD_MS } from '../lib/silentGazeReaction'
+import type { MotionCatalogItem } from '../types'
 
 interface FaceSample {
   descriptor: number[]
@@ -39,6 +41,7 @@ interface Props {
   enrolling: boolean
   blocked: boolean
   ttsEnabled: boolean
+  motions: MotionCatalogItem[]
   volume: number
   stopRef: { current: (() => void) | null }
   onEnrolled: (enrollment: GazeEnrollment) => void
@@ -230,6 +233,7 @@ export default function GazeSpeechMonitor({
   enrolling,
   blocked,
   ttsEnabled,
+  motions,
   volume,
   stopRef,
   onEnrolled,
@@ -264,6 +268,8 @@ export default function GazeSpeechMonitor({
   const getAudioContextRef = useRef(getAudioContext)
   const lookSinceRef = useRef<number | null>(null)
   const armedRef = useRef(true)
+  const motionsRef = useRef(motions)
+  const silentCursorRef = useRef(0)
   const [captureError, setCaptureError] = useState('')
   const [capturing, setCapturing] = useState(false)
   const cameraNeeded = enrolling || (enabled && enrollment !== null) || faceFollow
@@ -281,6 +287,7 @@ export default function GazeSpeechMonitor({
   onBeatRef.current = onBeat
   onSpokenRef.current = onSpoken
   getAudioContextRef.current = getAudioContext
+  motionsRef.current = motions
 
   useEffect(() => {
     stopRef.current = stopPlayback
@@ -545,6 +552,26 @@ export default function GazeSpeechMonitor({
     }
   }
 
+  /** 読み上げる用件が無いときは、表情と身振りだけを短く出します。 */
+  async function holdSilentReaction(): Promise<boolean> {
+    const choice = nextSilentGazeReaction(motionsRef.current, silentCursorRef.current)
+    silentCursorRef.current = choice.nextCursor
+    interruptedRef.current = false
+    onBeatRef.current({
+      motion: choice.motion ? { name: choice.motion } : null,
+      expression: choice.expression,
+      text: '',
+      beatIndex: 0,
+    })
+    onStatusRef.current('無言で反応しています')
+    const until = performance.now() + SILENT_GAZE_HOLD_MS
+    while (performance.now() < until) {
+      if (blockedRef.current || interruptedRef.current) break
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+    }
+    return true
+  }
+
   /** 待ち行列の先頭を受け取り、動きを変えながら続けて再生します。 */
   async function claimAndPlay(): Promise<void> {
     if (playingRef.current || blockedRef.current) return
@@ -560,7 +587,7 @@ export default function GazeSpeechMonitor({
       }
       const beats = readGazeBeats(payload)
       if (payload.spoken !== true || beats.length === 0) {
-        onStatusRef.current('話す内容はありません')
+        acted = await holdSilentReaction()
         return
       }
       if (blockedRef.current) {

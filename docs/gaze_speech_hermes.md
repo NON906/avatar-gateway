@@ -26,7 +26,7 @@ description: Use when preparing gaze speech for the camera cron. Two or three be
 
 用件があるとき: 2つか3つのブロック。各ブロックは `[avatar]` の直後に `[speech]`。`[avatar]` の中は v が 1、motion、expression だけのJSON。motion と expression は下の名前から選び、ブロックごとに前と変える。`[speech]` の中は、確認した用件を静かで具体的な口語の一文にする。
 
-用件がないとき: `[gaze:silent]`
+用件がないとき: `[gaze:silent]`。身振り用のブロックは出さない。カメラを見た瞬間の無言の身振りはゲートウェイが付ける。
 
 ## 規則
 

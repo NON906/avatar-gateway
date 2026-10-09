@@ -2049,6 +2049,7 @@ export default function App() {
           enrolling={gazeEnrolling}
           blocked={conversationActive}
           ttsEnabled={health?.tts_enabled === true}
+          motions={configuredMotions}
           volume={uiSettings.speech_volume}
           stopRef={gazeStopRef}
           onEnrolled={(enrollment) => {
