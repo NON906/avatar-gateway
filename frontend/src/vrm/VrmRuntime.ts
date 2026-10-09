@@ -699,18 +699,24 @@ export class VrmRuntime {
     const targets = this.config.expressions[this.state]
     // shyは専用モーフを要求せず、参照実装と同じくhappy表情へ赤面を重ねます。
     const selectedExpression = this.agentExpression === 'shy' ? 'happy' : this.agentExpression
-    const weightGaps: number[] = []
+    const currentWeights: number[] = []
+    const targetWeights: number[] = []
     for (const name of EXPRESSION_NAMES) {
       const current = this.expressionValues.get(name) ?? 0
       const agentTarget = selectedExpression === name ? this.config.agentExpressionWeights[name] : 0
       const target = Math.max(targets[name] ?? 0, agentTarget)
-      weightGaps.push(Math.abs(current - target))
+      currentWeights.push(current)
+      targetWeights.push(target)
       const next = THREE.MathUtils.lerp(current, target, blend)
       this.expressionValues.set(name, next)
       const resolved = this.resolvedExpressionNames.get(name)
       if (resolved) manager.setValue(resolved, next)
     }
-    const holdBlink = shouldHoldBlinkDuringExpression(this.suppressBlinkDuringExpression, weightGaps)
+    const holdBlink = shouldHoldBlinkDuringExpression(
+      this.suppressBlinkDuringExpression,
+      currentWeights,
+      targetWeights,
+    )
     this.updateBlink(manager, delta, elapsed, holdBlink)
   }
 
@@ -756,7 +762,7 @@ export class VrmRuntime {
     elapsed: number,
     holdBlink: boolean,
   ): void {
-    // 表情モーフの移動中に瞬きを重ねると崩れるVRMでは、切替が終わるまで目を開けたままにします。
+    // 表情モーフと瞬きが重なると崩れるVRMでは、表情が残っているあいだ目を開けたままにします。
     if (holdBlink) {
       this.blinkActive = false
       this.applyBlink(manager, 0, 0)
