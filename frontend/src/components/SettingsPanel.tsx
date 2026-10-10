@@ -326,12 +326,14 @@ export default function SettingsPanel({
               <button type="button" className="primary" onClick={onGazeEnroll}>顔を登録</button>
               <button type="button" disabled={!gazeEnrolled} onClick={onGazeClear}>登録を消す</button>
             </div>
-            <small>
-              {gazeEnrolled ? 'このブラウザに顔を登録済みです。' : '顔は未登録です。'}
-              {gazePending === null ? '' : ` 未読は${gazePending}件です。`}
-              {gazeJobFound === false ? ' Hermes側に avatar-gateway-gaze のジョブがまだ見当たりません。' : ''}
-              {gazeStatus ? ` 状態: ${gazeStatus}` : ''}
-              {' '}ブラウザ設定のリセットでは、この顔登録は消えません。
+            <small className="gaze-setting-status">
+              <span>
+                {gazeEnrolled ? 'このブラウザに顔を登録済みです。' : '顔は未登録です。'}
+                {gazePending === null ? '' : `未読は${gazePending}件です。`}
+              </span>
+              {gazeJobFound === false ? <span>Hermes側に avatar-gateway-gaze のジョブがまだ見当たりません。</span> : null}
+              {gazeStatus ? <span>{`状態: ${gazeStatus}`}</span> : null}
+              <span>ブラウザ設定のリセットでは、この顔登録は消えません。</span>
             </small>
 
             <label className="settings-toggle">
@@ -345,7 +347,7 @@ export default function SettingsPanel({
                 <small>ウェブカメラに映った顔の位置へ、視線と顔の向きを向けます。登録した顔があるときはその人だけを見ます。未登録のときは、いちばん大きく映っている顔を見ます。</small>
               </span>
             </label>
-            {faceFollow && <small>状態: {faceFollowStatus}</small>}
+            {faceFollow && <small className="gaze-setting-status">状態: {faceFollowStatus}</small>}
 
             <label className="settings-toggle">
               <input

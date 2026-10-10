@@ -269,6 +269,8 @@ button, textarea { font: inherit; }
 .settings-toggle span { display: flex; flex-direction: column; gap: 3px; }
 .settings-toggle strong, .settings-range strong { color: #334155; font-size: 12px; }
 .settings-toggle small { color: #64748b; font-size: 10px; line-height: 1.45; }
+.gaze-setting-status { display: block; margin: 0 0 8px; color: #64748b; font-family: inherit; font-size: 10px; font-weight: 400; line-height: 1.45; }
+.gaze-setting-status span { display: block; }
 .touch-region-settings { margin: 8px 0 0; padding: 10px 0; border: 0; border-top: 1px solid #e2e8f0; color: #475569; }
 .touch-region-settings legend { padding: 10px 0 5px; font-size: 10px; font-weight: 700; }
 .touch-region-settings > div { display: flex; flex-wrap: wrap; gap: 8px 14px; }
