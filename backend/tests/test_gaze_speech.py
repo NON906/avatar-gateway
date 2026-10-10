@@ -53,6 +53,20 @@ def test_extract_gaze_performance_keeps_response_beats_only() -> None:
     assert extract_gaze_performance("[speech]ここに日本語の一文[/speech]") is None
 
 
+def test_extract_gaze_performance_keeps_speech_when_close_tags_are_missing() -> None:
+    """閉じタグを省いたcron応答でも、応答側の一文と演技を残します。"""
+    logged = (
+        "## Prompt\n"
+        "[speech]ここに日本語の一文[/speech]\n"
+        "## Response\n"
+        '[avatar] {"v": 1, "motion": "hands_behind_back", "expression": "relaxed"}\n'
+        "[speech] 午後の光が少し強くなって、机の角が白く浮かんでいる。\n"
+    )
+    assert extract_gaze_performance(logged) == _performance(
+        GazeBeat("午後の光が少し強くなって、机の角が白く浮かんでいる。", "hands_behind_back", "relaxed"),
+    )
+
+
 def test_extract_limits_a_performance_to_three_beats() -> None:
     """一度に読み上げるのは先頭の三文までにします。"""
     text = "".join(f"[speech]{index}番です。[/speech]" for index in range(1, 6))
@@ -244,3 +258,134 @@ async def test_claim_endpoint_rejects_disabled_tts(
 
     assert caught.value.status_code == 409
     assert store.claim() == _performance(GazeBeat("残しておく文です。"))
+
+
+@pytest.mark.asyncio
+async def test_claim_endpoint_splits_a_long_beat_at_the_tts_chunk_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """音声上限を超える視線の一文を、会話と同じ文字数へ切ってから合成します。"""
+    from dataclasses import replace
+
+    from app import main as main_module
+    from app.services.motion_tags import MotionCatalog, MotionDefinition
+
+    short_text = "短い確認です。"
+    long_text = "朝の机には、" + ("あ" * 80) + "、" + ("い" * 70) + "。"
+    cron_dir = tmp_path / "cron"
+    _write_jobs(cron_dir, [{"id": "abc123def456", "name": "avatar-gateway-gaze"}])
+    store = GazeSpeechStore(cron_dir, tmp_path / "state.json", "avatar-gateway-gaze")
+    store.scan()
+    _write_output(
+        cron_dir,
+        "abc123def456",
+        "2026-10-10_09-40-00.md",
+        (
+            '[avatar]{"v":1,"motion":"nod","expression":"relaxed"}[/avatar]'
+            f"[speech]{short_text}[/speech]"
+            '[avatar]{"v":1,"motion":"wave","expression":"happy"}[/avatar]'
+            f"[speech]{long_text}[/speech]"
+        ),
+    )
+    monkeypatch.setattr(main_module, "gaze_store", store)
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(
+            main_module.settings,
+            tts_enabled=True,
+            tts_chunk_min_chars=6,
+            tts_chunk_max_chars=100,
+        ),
+    )
+    nod = MotionDefinition(
+        name="nod",
+        label="うなずく",
+        file_name="nod.vrma",
+        prompt="同意",
+        enabled=True,
+        available=True,
+    )
+    wave = MotionDefinition(
+        name="wave",
+        label="手を振る",
+        file_name="wave.vrma",
+        prompt="挨拶",
+        enabled=True,
+        available=True,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_load_motion_catalog",
+        lambda: MotionCatalog((nod, wave), None),
+    )
+    synthesized: list[str] = []
+
+    async def fake_synthesize(text: str, _config, _client=None):
+        """外部TTSの代わりに、渡された文と仮の音声IDを返します。"""
+        synthesized.append(text)
+        utterance_id = f"{len(synthesized):032d}"[-32:]
+        return utterance_id, tmp_path / f"{utterance_id}.wav"
+
+    monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
+
+    payload = await main_module.claim_gaze_speech()
+
+    first_chunk = "朝の机には、" + ("あ" * 80) + "、"
+    second_chunk = ("い" * 70) + "。"
+    assert synthesized == [short_text, first_chunk, second_chunk]
+    assert all(len(text) <= 100 for text in synthesized)
+    assert [beat["text"] for beat in payload["beats"]] == synthesized
+    assert [beat["expression"] for beat in payload["beats"]] == ["relaxed", "happy", "happy"]
+    assert [beat["motion"]["name"] for beat in payload["beats"]] == ["nod", "wave", "wave"]
+    assert store.claim() is None
+
+
+@pytest.mark.asyncio
+async def test_claim_endpoint_returns_the_original_performance_when_a_chunk_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """分割後の途中で合成に失敗しても、切る前の反応全体を先頭へ戻します。"""
+    from dataclasses import replace
+
+    from app import main as main_module
+    from app.services.stylebertvits2 import TtsError
+
+    long_text = "朝の机には、" + ("あ" * 80) + "、" + ("い" * 70) + "。"
+    cron_dir = tmp_path / "cron"
+    _write_jobs(cron_dir, [{"id": "abc123def456", "name": "avatar-gateway-gaze"}])
+    store = GazeSpeechStore(cron_dir, tmp_path / "state.json", "avatar-gateway-gaze")
+    store.scan()
+    _write_output(
+        cron_dir,
+        "abc123def456",
+        "2026-10-10_09-41-00.md",
+        f"[speech]{long_text}[/speech]",
+    )
+    monkeypatch.setattr(main_module, "gaze_store", store)
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, tts_enabled=True, tts_chunk_min_chars=6, tts_chunk_max_chars=100),
+    )
+    created: list[Path] = []
+
+    async def fake_synthesize(text: str, _config, _client=None):
+        """最初の断片だけ音声ファイルを作り、次の断片で合成失敗にします。"""
+        if created:
+            raise TtsError("string_too_long")
+        path = tmp_path / "partial.wav"
+        path.write_bytes(b"wav")
+        created.append(path)
+        return "b" * 32, path
+
+    monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
+
+    with pytest.raises(HTTPException) as caught:
+        await main_module.claim_gaze_speech()
+
+    assert caught.value.status_code == 502
+    assert created[0].exists() is False
+    assert store.claim() == _performance(GazeBeat(long_text))

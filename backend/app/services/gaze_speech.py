@@ -25,6 +25,30 @@ _MAX_BEATS = 3
 _MAX_QUEUE = 20
 _MAX_SEEN = 400
 _MAX_OUTPUT_BYTES = 256 * 1024
+_LOOSE_TAG_PATTERN = re.compile(r"\[(/?)(avatar|speech)\]", re.IGNORECASE)
+
+
+def _close_loose_tags(body: str) -> str:
+    """開きっぱなしの制御タグを、次のタグか本文の末尾で閉じます。"""
+    open_kind: str | None = None
+    pieces: list[str] = []
+    cursor = 0
+    for match in _LOOSE_TAG_PATTERN.finditer(body):
+        closing = bool(match.group(1))
+        kind = match.group(2).lower()
+        if open_kind is not None and not (closing and kind == open_kind):
+            pieces.append(body[cursor:match.start()])
+            pieces.append(f"[/{open_kind}]")
+            cursor = match.start()
+            open_kind = None
+        if closing and open_kind == kind:
+            open_kind = None
+        elif not closing:
+            open_kind = kind
+    pieces.append(body[cursor:])
+    if open_kind is not None:
+        pieces.append(f"[/{open_kind}]")
+    return "".join(pieces)
 
 
 @dataclass(frozen=True)
@@ -57,7 +81,7 @@ def extract_gaze_performance(text: str) -> GazePerformance | None:
     motion: str | None = None
     expression = "neutral"
     beats: list[GazeBeat] = []
-    for match in _TOKEN_PATTERN.finditer(_response_body(text)):
+    for match in _TOKEN_PATTERN.finditer(_close_loose_tags(_response_body(text))):
         avatar_raw, speech_raw = match.group(1), match.group(2)
         if avatar_raw is not None:
             motion, expression = _parse_avatar(avatar_raw)

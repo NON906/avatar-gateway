@@ -1010,16 +1010,23 @@ async def claim_gaze_speech() -> dict:
     try:
         async with create_tts_client() as client:
             for beat in performance.beats:
-                utterance_id, audio_path = await synthesize(beat.text, settings, client)
-                created.append(audio_path)
+                # 列へ入れる前に割ると三ブロックの上限で後ろが落ちるため、声の直前で会話と同じ長さへ切ります。
+                chunker = SentenceChunker(
+                    min_chars=settings.tts_chunk_min_chars,
+                    max_chars=settings.tts_chunk_max_chars,
+                )
+                chunks = [*chunker.feed(beat.text), *chunker.finish()]
                 motion = catalog.selectable_motions.get(beat.motion) if beat.motion else None
-                beats_out.append({
-                    "text": beat.text,
-                    "utterance_id": utterance_id,
-                    "audio_url": f"/api/audio/{utterance_id}.wav",
-                    "motion": motion.to_public_dict() if motion else None,
-                    "expression": beat.expression,
-                })
+                for chunk in chunks:
+                    utterance_id, audio_path = await synthesize(chunk, settings, client)
+                    created.append(audio_path)
+                    beats_out.append({
+                        "text": chunk,
+                        "utterance_id": utterance_id,
+                        "audio_url": f"/api/audio/{utterance_id}.wav",
+                        "motion": motion.to_public_dict() if motion else None,
+                        "expression": beat.expression,
+                    })
     except TtsError:
         logger.exception("gaze speech synthesis failed")
         for path in created:
