@@ -37,9 +37,11 @@ interface Props {
   faceFollow: boolean
   faceFollowStatus: string
   detectEase: boolean
+  gazeMessageSync: boolean
   onGazeEnabled: (enabled: boolean) => void
   onFaceFollow: (enabled: boolean) => void
   onDetectEase: (enabled: boolean) => void
+  onGazeMessageSync: (enabled: boolean) => void
   onGazeEnroll: () => void
   onGazeClear: () => void
   onChange: (changes: UiSettingsOverrides) => void
@@ -66,9 +68,11 @@ export default function SettingsPanel({
   faceFollow,
   faceFollowStatus,
   detectEase,
+  gazeMessageSync,
   onGazeEnabled,
   onFaceFollow,
   onDetectEase,
+  onGazeMessageSync,
   onGazeEnroll,
   onGazeClear,
   onChange,
@@ -303,66 +307,70 @@ export default function SettingsPanel({
         </section>
 
         <section className="ui-settings-section">
-          <h3>視線で話しかける</h3>
-          <p>
-            登録した顔がウェブカメラを向くと、Hermesのcronがlocalへ出した短い文を読み上げます。通常の会話には残りません。
-            指示文は <code>docs/gaze_speech_hermes.md</code> です。
-          </p>
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={gazeEnabled}
-              onChange={(event) => onGazeEnabled(event.target.checked)}
-            />
-            <span>
-              <strong>視線発話を使う</strong>
-              <small>顔の登録が済んでいて、音声合成が有効なときだけ話します。</small>
-            </span>
-          </label>
-          <div className="settings-row-actions">
-            <button type="button" className="primary" onClick={onGazeEnroll}>顔を登録</button>
-            <button type="button" disabled={!gazeEnrolled} onClick={onGazeClear}>登録を消す</button>
+          <h3>顔（視線）の検出</h3>
+          <p>ウェブカメラを使った視線・顔の機能をまとめて設定します。画像は保存しません。</p>
+
+          <div className="gaze-group">
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={gazeEnabled}
+                onChange={(event) => onGazeEnabled(event.target.checked)}
+              />
+              <span>
+                <strong>視線で話しかける</strong>
+                <small>登録した顔がウェブカメラを向くと、Hermesのcronが出した短い文を読み上げます。指示文は <code>docs/gaze_speech_hermes.md</code> です。</small>
+              </span>
+            </label>
+            <div className="settings-row-actions">
+              <button type="button" className="primary" onClick={onGazeEnroll}>顔を登録</button>
+              <button type="button" disabled={!gazeEnrolled} onClick={onGazeClear}>登録を消す</button>
+            </div>
+            <small>
+              {gazeEnrolled ? 'このブラウザに顔を登録済みです。' : '顔は未登録です。'}
+              {gazePending === null ? '' : ` 未読は${gazePending}件です。`}
+              {gazeJobFound === false ? ' Hermes側に avatar-gateway-gaze のジョブがまだ見当たりません。' : ''}
+              {gazeStatus ? ` 状態: ${gazeStatus}` : ''}
+              {' '}ブラウザ設定のリセットでは、この顔登録は消えません。
+            </small>
+
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={faceFollow}
+                onChange={(event) => onFaceFollow(event.target.checked)}
+              />
+              <span>
+                <strong>顔の位置を見る</strong>
+                <small>ウェブカメラに映った顔の位置へ、視線と顔の向きを向けます。登録した顔があるときはその人だけを見ます。未登録のときは、いちばん大きく映っている顔を見ます。</small>
+              </span>
+            </label>
+            {faceFollow && <small>状態: {faceFollowStatus}</small>}
+
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={detectEase}
+                onChange={(event) => onDetectEase(event.target.checked)}
+              />
+              <span>
+                <strong>顔の検出を見やすくする</strong>
+                <small>暗いときだけ、検出用の画面の明るさを上げます。視線発話、顔の位置を見る、顔の登録で使います。明るい映像はそのままです。本人かどうかの判定は変えません。</small>
+              </span>
+            </label>
+
+            <label className="settings-toggle">
+              <input
+                type="checkbox"
+                checked={gazeMessageSync}
+                onChange={(event) => onGazeMessageSync(event.target.checked)}
+              />
+              <span>
+                <strong>視線発話をメッセージに同期</strong>
+                <small>視線で話しかけた内容を、次のユーザー発言の先頭に <code>[avatar_gateway_message]</code> として付与して送信します。会話の文脈に含めたいときに有効にします。</small>
+              </span>
+            </label>
           </div>
-          <small>
-            {gazeEnrolled ? 'このブラウザに顔を登録済みです。' : '顔は未登録です。'}
-            {gazePending === null ? '' : ` 未読は${gazePending}件です。`}
-            {gazeJobFound === false ? ' Hermes側に avatar-gateway-gaze のジョブがまだ見当たりません。' : ''}
-            {gazeStatus ? ` 状態: ${gazeStatus}` : ''}
-            {' '}ブラウザ設定のリセットでは、この顔登録は消えません。
-          </small>
-        </section>
-
-        <section className="ui-settings-section">
-          <h3>顔の位置を見る</h3>
-          <p>ウェブカメラに映った顔の位置へ、視線と顔の向きを向けます。画像は保存しません。</p>
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={faceFollow}
-              onChange={(event) => onFaceFollow(event.target.checked)}
-            />
-            <span>
-              <strong>顔の位置に合わせる</strong>
-              <small>登録した顔があるときはその人だけを見ます。未登録のときは、いちばん大きく映っている顔を見ます。</small>
-            </span>
-          </label>
-          {faceFollow && <small>状態: {faceFollowStatus}</small>}
-        </section>
-
-        <section className="ui-settings-section">
-          <h3>顔の検出</h3>
-          <p>暗いときだけ、検出用の画面の明るさを上げます。表示には出さず、画像も保存しません。本人かどうかの判定は変えません。</p>
-          <label className="settings-toggle">
-            <input
-              type="checkbox"
-              checked={detectEase}
-              onChange={(event) => onDetectEase(event.target.checked)}
-            />
-            <span>
-              <strong>検出を見やすくする</strong>
-              <small>視線発話、顔の位置を見る、顔の登録で使います。明るい映像はそのままです。</small>
-            </span>
-          </label>
         </section>
 
         <section className="ui-settings-section">

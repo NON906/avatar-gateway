@@ -1420,6 +1420,12 @@ export default function App() {
 
     conversationActiveRef.current = true
     gazeStopRef.current?.()
+    // 視線発話の同期が有効なら、書き起こしをメッセージへ付与して送信する
+    let messageToSend = displayedUserText
+    if (gazeSettings.gazeMessageSync && gazeTranscript.trim()) {
+      const prefix = `[avatar_gateway_message]\n[別セッションでassistantが発したメッセージ]\n${gazeTranscript.trim()}\n[/avatar_gateway_message]\n`
+      messageToSend = prefix + displayedUserText
+    }
     setGazeTranscript('')
 
     // 通常送信ではこの場で、ふれあいでは先行タップ時に同じContextを有効化済みです。
@@ -1452,7 +1458,11 @@ export default function App() {
       setConversationActive(false)
     }
 
-    const history: Message[] = [...messages, { role: 'user', content: displayedUserText }]
+    const history: Message[] = [...messages]
+    if (gazeTranscript.trim()) {
+      history.push({ role: 'assistant', content: gazeTranscript.trim() })
+    }
+    history.push({ role: 'user', content: displayedUserText })
     setMessages([...history, { role: 'assistant', content: '' }])
     if (clearComposer) setInput('')
     setError('')
@@ -1561,7 +1571,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         // 正式履歴はHermes SessionDBからバックエンドが取得するため、今回の入力だけを送ります。
         body: JSON.stringify({
-          input: text,
+          input: messageToSend,
           session_id: hermesSessionId ?? undefined,
         }),
         signal: session.controller.signal,
@@ -1929,36 +1939,38 @@ export default function App() {
         ) : agentResourcesOpen ? (
           <AgentResourcesPanel />
         ) : settingsOpen ? (
-          <SettingsPanel
-            settings={uiSettings}
-            currentCamera={currentCamera}
-            savingDefaults={settingsSaving}
-            message={settingsMessage}
-            error={settingsError}
-            backgrounds={backgroundAssets}
-            backgroundsLoading={backgroundsLoading}
-            backgroundsError={backgroundsError}
-            onChange={changeUiSettings}
-            onReloadBackgrounds={() => void loadBackgrounds()}
-            onResetBrowser={resetBrowserUiSettings}
-            onSaveDefaults={() => void saveServerUiDefaults()}
-            gazeEnabled={gazeSettings.enabled}
-            gazeEnrolled={gazeSettings.enrollment !== null}
-            gazeStatus={gazeStatus}
-            gazePending={gazePending}
-            gazeJobFound={gazeJobFound}
-            onGazeEnabled={(enabled) => updateGazeSettings({ ...gazeSettings, enabled })}
-            faceFollow={gazeSettings.faceFollow}
-            faceFollowStatus={faceFollowStatus}
-            detectEase={gazeSettings.detectEase}
-            onFaceFollow={(enabled) => {
-              if (!enabled) faceFollowRef.current = null
-              updateGazeSettings({ ...gazeSettings, faceFollow: enabled })
-            }}
-            onDetectEase={(enabled) => updateGazeSettings({ ...gazeSettings, detectEase: enabled })}
-            onGazeEnroll={() => setGazeEnrolling(true)}
-            onGazeClear={() => updateGazeSettings({ ...gazeSettings, enrollment: null })}
-          />
+                  <SettingsPanel
+                    settings={uiSettings}
+                    currentCamera={currentCamera}
+                    savingDefaults={settingsSaving}
+                    message={settingsMessage}
+                    error={settingsError}
+                    backgrounds={backgroundAssets}
+                    backgroundsLoading={backgroundsLoading}
+                    backgroundsError={backgroundsError}
+                    onChange={changeUiSettings}
+                    onReloadBackgrounds={() => void loadBackgrounds()}
+                    onResetBrowser={resetBrowserUiSettings}
+                    onSaveDefaults={() => void saveServerUiDefaults()}
+                    gazeEnabled={gazeSettings.enabled}
+                    gazeEnrolled={gazeSettings.enrollment !== null}
+                    gazeStatus={gazeStatus}
+                    gazePending={gazePending}
+                    gazeJobFound={gazeJobFound}
+                    onGazeEnabled={(enabled) => updateGazeSettings({ ...gazeSettings, enabled })}
+                    faceFollow={gazeSettings.faceFollow}
+                    faceFollowStatus={faceFollowStatus}
+                    detectEase={gazeSettings.detectEase}
+                    gazeMessageSync={gazeSettings.gazeMessageSync}
+                    onFaceFollow={(enabled) => {
+                      if (!enabled) faceFollowRef.current = null
+                      updateGazeSettings({ ...gazeSettings, faceFollow: enabled })}
+                    }
+                    onDetectEase={(enabled) => updateGazeSettings({ ...gazeSettings, detectEase: enabled })}
+                    onGazeMessageSync={(enabled) => updateGazeSettings({ ...gazeSettings, gazeMessageSync: enabled })}
+                    onGazeEnroll={() => setGazeEnrolling(true)}
+                    onGazeClear={() => updateGazeSettings({ ...gazeSettings, enrollment: null })}
+                  />
         ) : (
           <div className="conversation-scroll" ref={logRef}>
             <div className="messages" aria-live="polite">

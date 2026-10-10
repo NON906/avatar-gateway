@@ -13,11 +13,12 @@ export interface GazeSettings {
   enabled: boolean
   faceFollow: boolean
   detectEase: boolean
+  gazeMessageSync: boolean
   enrollment: GazeEnrollment | null
 }
 
 function defaultGazeSettings(): GazeSettings {
-  return { enabled: false, faceFollow: false, detectEase: false, enrollment: null }
+  return { enabled: false, faceFollow: false, detectEase: false, gazeMessageSync: true, enrollment: null }
 }
 
 interface Point {
@@ -40,6 +41,7 @@ export function readGazeSettings(storage: Storage): GazeSettings {
       enabled: parsed.enabled === true,
       faceFollow: parsed.faceFollow === true,
       detectEase: parsed.detectEase === true,
+      gazeMessageSync: parsed.gazeMessageSync !== false,
       enrollment: readEnrollment(parsed.enrollment),
     }
   } catch {
