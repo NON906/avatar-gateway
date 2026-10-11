@@ -45,8 +45,10 @@ export interface Health {
   model: string
   hermes: HermesHealth
   tts_enabled: boolean
+  tts_provider: string
   stt: {
     enabled: boolean
+    provider: string
     available: boolean
     model: string
     device: string

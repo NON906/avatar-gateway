@@ -1,6 +1,7 @@
 """会話・音声・VRM・Web UIを同一オリジンで提供するFastAPIアプリです。"""
 
 import asyncio
+import base64
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -31,12 +32,18 @@ from .services.hermes import (
 from .services.hermes_runs import HermesRunCoordinator
 from .services.generated_images import GeneratedImageStore
 from .services.hermes_diagnostics import hermes_diagnostic_notice
-from .services.faster_whisper import (
-    FasterWhisperTranscriber,
+from .services.speech_backends import (
+    OPENAI_PROVIDER,
     NoSpeechDetectedError,
+    SpeechStreamUnsupported,
     TranscriptionError,
     TranscriptionUnavailableError,
-    is_model_installed,
+    TtsError,
+    create_transcriber,
+    create_tts_client,
+    iter_speech_pcm,
+    synthesize,
+    transcription_status,
 )
 from .services.access_control import (
     authenticate_basic_header,
@@ -60,7 +67,6 @@ from .services.speech_tags import (
     strip_speech_tags,
 )
 from .services.gaze_speech import GazeSpeechStore
-from .services.stylebertvits2 import TtsError, create_tts_client, synthesize
 from .services.touch_interaction import present_touch_input, touch_response_instructions
 from .services.ui_settings import UiSettings, UiSettingsError, UiSettingsStore, list_backgrounds
 
@@ -131,7 +137,7 @@ gaze_store = GazeSpeechStore(
 )
 # 読み上げ停止でHermesのRunを巻き込まず、対象のTTSワーカーだけを中断するため保持します。
 speech_sequence_workers: dict[str, asyncio.Task[None]] = {}
-transcriber = FasterWhisperTranscriber(settings)
+transcriber = create_transcriber(settings)
 
 _SUPPORTED_AUDIO_TYPES = frozenset({
     "audio/mp4",
@@ -339,7 +345,6 @@ def _raise_hermes_api_error(exc: HermesError) -> NoReturn:
 async def health() -> dict:
     """UIが接続状態と現在の機能設定を確認できる情報を返します。"""
     vrm_path, vrm_url = _resolve_vrm_asset()
-    stt_model_installed = is_model_installed(settings)
     motion_catalog = _load_motion_catalog()
     hermes = await _hermes_health()
     return {
@@ -347,18 +352,8 @@ async def health() -> dict:
         "model": settings.hermes_model,
         "hermes": hermes,
         "tts_enabled": settings.tts_enabled,
-        "stt": {
-            "enabled": settings.stt_enabled,
-            "available": settings.stt_enabled and stt_model_installed,
-            "model": settings.stt_model,
-            "device": settings.stt_device,
-            "compute_type": settings.stt_compute_type,
-            "message": (
-                None
-                if not settings.stt_enabled or stt_model_installed
-                else "Whisperモデルが未導入です。READMEの音声認識モデル導入手順を実行してください。"
-            ),
-        },
+        "tts_provider": settings.tts_provider,
+        "stt": transcription_status(settings),
         "vrm_available": vrm_path is not None,
         "vrm_url": vrm_url,
         "suppress_blink_during_expression": settings.suppress_blink_during_expression,
@@ -847,6 +842,58 @@ async def stream_hermes_conversation(
             try:
                 if settings.tts_enabled:
                     async with create_tts_client() as client:
+                        async def emit_openai_stream(text, client, segment_index, motion, expression) -> str:
+                            """SSEで届いたPCMを順に渡し、非対応のサーバーではWAVへ戻します。"""
+                            utterance_id = uuid4().hex
+                            announced = False
+                            try:
+                                async for kind, value in iter_speech_pcm(text, settings, client):
+                                    if generation_failed:
+                                        if announced:
+                                            await event_queue.put(("speech.stream.done", {
+                                                "utterance_id": utterance_id,
+                                            }))
+                                        return "played"
+                                    if kind == "rate":
+                                        announced = True
+                                        await event_queue.put(("speech.stream.started", {
+                                            "sequence_id": sequence_id,
+                                            "segment_index": segment_index,
+                                            "utterance_id": utterance_id,
+                                            "sample_rate": value,
+                                            "motion": motion.to_public_dict() if motion else None,
+                                            "expression": expression,
+                                        }))
+                                    elif kind == "pcm" and value:
+                                        audio_ready.set()
+                                        await event_queue.put(("speech.audio.delta", {
+                                            "utterance_id": utterance_id,
+                                            "audio": base64.b64encode(value).decode("ascii"),
+                                        }))
+                                    elif kind == "done":
+                                        await event_queue.put(("speech.stream.done", {
+                                            "utterance_id": utterance_id,
+                                        }))
+                                return "played"
+                            except SpeechStreamUnsupported:
+                                if not announced:
+                                    return "wav"
+                                await event_queue.put(("speech.failed", {
+                                    "sequence_id": sequence_id,
+                                    "segment_index": segment_index,
+                                    "reason": "音声ストリームを開始した後に中断されました",
+                                }))
+                                return "failed"
+                            except TtsError as exc:
+                                if not announced:
+                                    raise
+                                await event_queue.put(("speech.failed", {
+                                    "sequence_id": sequence_id,
+                                    "segment_index": segment_index,
+                                    "reason": str(exc),
+                                }))
+                                return "failed"
+
                         while True:
                             item = await speech_queue.get()
                             if item is None:
@@ -856,6 +903,16 @@ async def stream_hermes_conversation(
                             if generation_failed:
                                 continue
                             try:
+                                if settings.tts_provider == OPENAI_PROVIDER:
+                                    outcome = await emit_openai_stream(
+                                        text, client, segment_index, motion, expression,
+                                    )
+                                    if outcome == "played":
+                                        succeeded += 1
+                                        continue
+                                    if outcome == "failed":
+                                        failed += 1
+                                        continue
                                 utterance_id, audio_path = await synthesize(text, settings, client)
                                 generated_audio_paths.add(audio_path)
                                 if generation_failed:

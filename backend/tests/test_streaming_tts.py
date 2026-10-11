@@ -51,7 +51,7 @@ async def test_hermes_empty_response_is_shown_in_japanese_without_tts(
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="[touch:head]"),
@@ -87,7 +87,7 @@ async def test_sequence_cancel_finishes_stream_without_waiting_for_tts(
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="停止して"),
@@ -148,7 +148,7 @@ async def test_first_sentence_is_synthesized_before_llm_finishes(monkeypatch: py
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="説明して"),
@@ -204,7 +204,7 @@ async def test_multiple_avatar_scenes_switch_motion_and_expression_at_audio_boun
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: motion_catalog)
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="途中で照れて"),
@@ -274,7 +274,7 @@ async def test_approval_preamble_and_result_are_synthesized_in_conversation_orde
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: motion_catalog)
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="実行して"),
@@ -321,7 +321,7 @@ async def test_tts_failure_does_not_stop_later_sentences(monkeypatch: pytest.Mon
     monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="続けて"),
@@ -379,7 +379,7 @@ async def test_hermes_error_terminates_both_producers(monkeypatch: pytest.Monkey
     monkeypatch.setattr(main_module, "_stream_agent_run", fake_stream_agent_run)
     monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
     monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
-    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True))
+    monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
         HermesConversationRequest(input="失敗確認"),
@@ -424,7 +424,7 @@ async def test_client_disconnect_cancels_stream_and_removes_audio(
     monkeypatch.setattr(
         main_module,
         "settings",
-        replace(main_module.settings, tts_enabled=True, audio_dir=tmp_path),
+        replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2", audio_dir=tmp_path),
     )
 
     response = await main_module.stream_hermes_conversation(
@@ -441,3 +441,45 @@ async def test_client_disconnect_cancels_stream_and_removes_audio(
 
     await asyncio.wait_for(stream_cancelled.wait(), timeout=1)
     assert not audio_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_openai_tts_streams_pcm_without_waiting_for_wav(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI互換の読み上げは、WAVの完成前にPCMのSSEをブラウザへ渡します。"""
+    async def fake_stream_agent_run(_request, _motion_prompt):
+        yield "assistant.delta", {"delta": "[speech]最初の説明が完成しました。"}
+        yield "assistant.delta", {"delta": "次"}
+        yield "assistant.completed", {"output": "[speech]最初の説明が完成しました。[/speech]"}
+
+    async def fake_iter(_text, _settings, _client):
+        yield ("rate", 48_000)
+        yield ("pcm", b"\x01\x00" * 200)
+        yield ("done", None)
+
+    async def fail_synthesize(*_args):
+        raise AssertionError("SSEを使えるときはWAVを取りに行きません")
+
+    monkeypatch.setattr(main_module, "_stream_agent_run", fake_stream_agent_run)
+    monkeypatch.setattr(main_module, "iter_speech_pcm", fake_iter)
+    monkeypatch.setattr(main_module, "synthesize", fail_synthesize)
+    monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
+    monkeypatch.setattr(main_module, "_load_motion_catalog", lambda: MotionCatalog((), None))
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, tts_enabled=True, tts_provider="openai"),
+    )
+
+    response = await main_module.stream_hermes_conversation(
+        HermesConversationRequest(input="説明して"),
+    )
+    body = "".join([
+        chunk.decode() if isinstance(chunk, bytes) else chunk
+        async for chunk in response.body_iterator
+    ])
+
+    assert body.index("event: speech.stream.started") < body.index("event: speech.audio.delta")
+    assert body.index("event: speech.audio.delta") < body.index("event: speech.stream.done")
+    assert "event: speech.requested" not in body

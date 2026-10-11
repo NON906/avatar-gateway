@@ -124,6 +124,11 @@ interface ConversationSession {
 
 const HERMES_SESSION_STORAGE_KEY = 'avatar-gateway.hermes-session-id'
 
+const ttsProviderLabels: Record<string, string> = {
+  stylebertvits2: 'Style-Bert-VITS2',
+  openai: 'OpenAI互換API',
+}
+
 type PreparedSpeech =
   | { status: 'ready'; buffer: AudioBuffer }
   | { status: 'failed'; error: string }
@@ -324,6 +329,192 @@ async function playPreparedSpeech(
     source.disconnect()
     analyser.disconnect()
     gain.disconnect()
+  }
+}
+
+interface PcmPlayback {
+  push(pcm: ArrayBuffer): void
+  close(): void
+  fail(): void
+  play(): Promise<SpeechPlaybackResult>
+}
+
+/** base64のPCMを、AudioContextが再生できる単声のバッファへ変換します。 */
+function decodeBase64Pcm(value: string): ArrayBuffer {
+  const binary = atob(value)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return bytes.buffer
+}
+
+function pcmToBuffer(context: AudioContext, pcm: ArrayBuffer, sampleRate: number): AudioBuffer | null {
+  const byteLength = pcm.byteLength - (pcm.byteLength % 2)
+  if (byteLength < 2) return null
+  const view = new DataView(pcm, 0, byteLength)
+  const buffer = context.createBuffer(1, byteLength / 2, sampleRate)
+  const channel = buffer.getChannelData(0)
+  for (let index = 0; index < channel.length; index += 1) {
+    channel[index] = view.getInt16(index * 2, true) / 32768
+  }
+  return buffer
+}
+
+/** SSEで届くPCMを、文の完成を待たずに順番へ連結して再生します。 */
+function createPcmPlayback(
+  request: SpeechRequest,
+  sampleRate: number,
+  context: AudioContext,
+  session: ConversationSession,
+  volume: number,
+  setAnalyser: (value: AnalyserNode | null) => void,
+  onStarted: () => void,
+  onSettled: () => void,
+): PcmPlayback {
+  const sources: AudioBufferSourceNode[] = []
+  const queued: AudioBuffer[] = []
+  let analyser: AnalyserNode | null = null
+  let gain: GainNode | null = null
+  let timeoutId: number | null = null
+  let nextTime = 0
+  let startedAt = 0
+  let started = false
+  let playing = false
+  let closed = false
+  let settled = false
+  let resolveEnded: (result: SpeechPlaybackResult) => void = () => undefined
+  const ended = new Promise<SpeechPlaybackResult>((resolve) => {
+    resolveEnded = resolve
+  })
+
+  const stopSources = () => {
+    for (const source of sources) {
+      try {
+        source.stop()
+      } catch {
+        // 開始前や終了済みの音源は、他のチャンクの停止を妨げません。
+      }
+    }
+  }
+
+  const finish = (result: SpeechPlaybackResult) => {
+    if (settled) return
+    settled = true
+    if (timeoutId !== null) window.clearTimeout(timeoutId)
+    session.speechController.signal.removeEventListener('abort', onAbort)
+    if (session.activeSource && sources.includes(session.activeSource)) session.activeSource = null
+    onSettled()
+    setAnalyser(null)
+    for (const source of sources) source.disconnect()
+    analyser?.disconnect()
+    gain?.disconnect()
+    resolveEnded(result)
+  }
+
+  const onAbort = () => {
+    stopSources()
+    finish({ status: 'cancelled', error: null })
+  }
+
+  const armTimeout = () => {
+    if (timeoutId !== null) window.clearTimeout(timeoutId)
+    const remainingMs = Math.max(0, (nextTime - context.currentTime) * 1000) + 8000
+    timeoutId = window.setTimeout(() => {
+      stopSources()
+      const reason = '音声再生がタイムアウトしました'
+      void notifySpeech('speech.failed', request, { reason })
+      finish({ status: 'failed', error: reason })
+    }, remainingMs)
+  }
+
+  let latestEnded = false
+
+  const completePlayback = () => {
+    if (settled) return
+    if (session.cancelled || session.speechStopped || session.speechController.signal.aborted) {
+      finish({ status: 'cancelled', error: null })
+      return
+    }
+    void notifySpeech('speech.completed', request, {
+      played_ms: started ? Math.round(performance.now() - startedAt) : 0,
+    })
+    finish({ status: 'completed', error: null })
+  }
+
+  const pump = () => {
+    if (!playing || settled) return
+    if (session.cancelled || session.speechStopped || session.speechController.signal.aborted) {
+      finish({ status: 'cancelled', error: null })
+      return
+    }
+    if (!analyser || !gain) {
+      analyser = context.createAnalyser()
+      analyser.fftSize = 2048
+      gain = context.createGain()
+      gain.gain.value = volume
+      analyser.connect(gain)
+      gain.connect(context.destination)
+      setAnalyser(analyser)
+      session.speechController.signal.addEventListener('abort', onAbort, { once: true })
+    }
+    while (queued.length > 0) {
+      const buffer = queued.shift()
+      if (!buffer) continue
+      const source = context.createBufferSource()
+      source.buffer = buffer
+      source.connect(analyser)
+      latestEnded = false
+      source.onended = () => {
+        if (source !== sources[sources.length - 1]) return
+        latestEnded = true
+        if (!closed || queued.length > 0) return
+        completePlayback()
+      }
+      const startAt = Math.max(nextTime, context.currentTime + 0.02)
+      source.start(startAt)
+      nextTime = startAt + buffer.duration
+      sources.push(source)
+      session.activeSource = source
+      if (!started) {
+        started = true
+        startedAt = performance.now()
+        onStarted()
+        void notifySpeech('speech.started', request)
+      }
+    }
+    if (started) armTimeout()
+    if (closed && queued.length === 0 && (sources.length === 0 || latestEnded)) {
+      completePlayback()
+    }
+  }
+
+  return {
+    push(pcm: ArrayBuffer) {
+      if (closed || settled) return
+      const buffer = pcmToBuffer(context, pcm, sampleRate)
+      if (!buffer) return
+      queued.push(buffer)
+      pump()
+    },
+    close() {
+      closed = true
+      pump()
+    },
+    fail() {
+      closed = true
+      stopSources()
+      finish({ status: 'failed', error: '音声を生成できませんでした。' })
+    },
+    async play() {
+      if (settled) return ended
+      if (session.cancelled || session.speechStopped || session.speechController.signal.aborted) {
+        finish({ status: 'cancelled', error: null })
+        return ended
+      }
+      playing = true
+      await context.resume()
+      pump()
+      return ended
+    },
   }
 }
 
@@ -1481,6 +1672,98 @@ export default function App() {
     let playbackTail = Promise.resolve()
     let activeHermesSessionId = hermesSessionId
     let keepRunForReload = false
+    const pcmPlayback = new Map<string, PcmPlayback>()
+
+    /** 再生開始時の表情とモーションを、WAV再生とPCM再生で揃えます。 */
+    const showSpeechStarted = (request: SpeechRequest) => {
+      if (!isCurrentSession()) return
+      setAvatarState('speaking')
+      setConversationActivityPhase('speaking')
+      expressionOwnerRef.current = request.utteranceId
+      setAvatarExpression(request.expression)
+      automaticMotionRef.current = request.motion?.url ?? null
+      setMotionCommand((current) => request.motion
+        ? {
+            id: (current?.id ?? 0) + 1,
+            action: 'play',
+            name: request.motion.label,
+            url: request.motion.url,
+            playback: request.motion.playback,
+            exitDurationSeconds: request.motion.exitDurationSeconds,
+          }
+        : { id: (current?.id ?? 0) + 1, action: 'stop' })
+    }
+
+    const showSpeechSettled = (request: SpeechRequest) => {
+      session.pendingSpeech.delete(request.utteranceId)
+      if (isCurrentSession() && expressionOwnerRef.current === request.utteranceId) {
+        expressionOwnerRef.current = null
+        setAvatarExpression('neutral')
+      }
+    }
+
+    /** SSEの最初の音声情報で再生器を作り、後から届くPCMをそこへ流します。 */
+    const beginPcmSpeech = (data: Record<string, unknown>) => {
+      const utteranceId = typeof data.utterance_id === 'string' ? data.utterance_id : ''
+      const sampleRate = typeof data.sample_rate === 'number' ? data.sample_rate : 0
+      if (!utteranceId || sampleRate < 8_000 || sampleRate > 96_000) {
+        speechFailed = true
+        setError('音声チャンクの情報が不足しています。テキスト応答は利用できます。')
+        return
+      }
+      const request: SpeechRequest = {
+        audioUrl: '',
+        utteranceId,
+        sequenceId: typeof data.sequence_id === 'string' ? data.sequence_id : null,
+        segmentIndex: typeof data.segment_index === 'number' ? data.segment_index : null,
+        motion: readSpeechMotion(data, configuredMotions),
+        expression: readSpeechExpression(data),
+      }
+      if (session.speechStopped) {
+        void notifySpeech('speech.cancelled', request, { reason: '利用者が読み上げを停止しました' })
+        return
+      }
+      if (!isCurrentSession()) {
+        void notifySpeech('speech.cancelled', request, { reason: '利用者が会話を中断しました' })
+        return
+      }
+      const playback = createPcmPlayback(
+        request,
+        sampleRate,
+        audioContext,
+        session,
+        uiSettings.speech_volume,
+        (value) => {
+          if (isCurrentSession()) setAnalyser(value)
+        },
+        () => showSpeechStarted(request),
+        () => {
+          pcmPlayback.delete(utteranceId)
+          showSpeechSettled(request)
+        },
+      )
+      pcmPlayback.set(utteranceId, playback)
+      session.pendingSpeech.set(utteranceId, request)
+      playbackTail = playbackTail.then(async () => {
+        if (!isCurrentSession() || session.speechStopped) {
+          playback.close()
+          return
+        }
+        try {
+          const result = await playback.play()
+          if (result.status !== 'failed' || !isCurrentSession() || !result.error) return
+          speechFailed = true
+          setError(`${result.error} テキスト応答は利用できます。`)
+        } catch (cause) {
+          session.pendingSpeech.delete(utteranceId)
+          if (!isCurrentSession()) return
+          const reason = cause instanceof Error ? cause.message : '音声を再生できませんでした。'
+          speechFailed = true
+          void notifySpeech('speech.failed', request, { reason })
+          setError(`${reason} テキスト応答は利用できます。`)
+        }
+      })
+    }
 
     /** WAVの準備は即開始し、実再生だけを直前の文へ連結して順序を保ちます。 */
     const enqueueSpeech = (data: Record<string, unknown>) => {
@@ -1523,32 +1806,8 @@ export default function App() {
             (value) => {
               if (isCurrentSession()) setAnalyser(value)
             },
-            () => {
-              if (!isCurrentSession()) return
-              // 合成完了時ではなく実際の再生開始時に、その発話タスク固有のVRMAへ切り替えます。
-              setAvatarState('speaking')
-              setConversationActivityPhase('speaking')
-              expressionOwnerRef.current = request.utteranceId
-              setAvatarExpression(request.expression)
-              automaticMotionRef.current = request.motion?.url ?? null
-              setMotionCommand((current) => request.motion
-                ? {
-                    id: (current?.id ?? 0) + 1,
-                    action: 'play',
-                    name: request.motion.label,
-                    url: request.motion.url,
-                    playback: request.motion.playback,
-                    exitDurationSeconds: request.motion.exitDurationSeconds,
-                  }
-                : { id: (current?.id ?? 0) + 1, action: 'stop' })
-            },
-            () => {
-              session.pendingSpeech.delete(request.utteranceId)
-              if (isCurrentSession() && expressionOwnerRef.current === request.utteranceId) {
-                expressionOwnerRef.current = null
-                setAvatarExpression('neutral')
-              }
-            },
+            () => showSpeechStarted(request),
+            () => showSpeechSettled(request),
           )
           if (result.status !== 'failed' || !isCurrentSession()) return
           speechFailed = true
@@ -1623,7 +1882,27 @@ export default function App() {
           if (session.speechStopped) void cancelSpeechSequence(data.sequence_id)
         } else if (eventName === 'speech.requested') {
           enqueueSpeech(data)
+        } else if (eventName === 'speech.stream.started') {
+          beginPcmSpeech(data)
+        } else if (eventName === 'speech.audio.delta') {
+          const utteranceId = typeof data.utterance_id === 'string' ? data.utterance_id : ''
+          const audio = typeof data.audio === 'string' ? data.audio : ''
+          const playback = pcmPlayback.get(utteranceId)
+          if (playback && audio) {
+            try {
+              playback.push(decodeBase64Pcm(audio))
+            } catch {
+              playback.fail()
+              speechFailed = true
+              setError('音声ストリームを再生できませんでした。テキスト応答は利用できます。')
+            }
+          }
+        } else if (eventName === 'speech.stream.done') {
+          const utteranceId = typeof data.utterance_id === 'string' ? data.utterance_id : ''
+          pcmPlayback.get(utteranceId)?.close()
         } else if (eventName === 'speech.failed') {
+          const utteranceId = typeof data.utterance_id === 'string' ? data.utterance_id : ''
+          pcmPlayback.get(utteranceId)?.fail()
           // 手動停止後に完了した合成は意図した破棄なので、音声エラーとして表示しません。
           if (!session.speechStopped) {
             speechFailed = true
@@ -1734,7 +2013,13 @@ export default function App() {
           <div className="brand-info">
             <span className="eyebrow">AVATAR GATEWAY</span>
             <span className="brand-runtime">
-              {health ? `${health.model} · ${health.tts_enabled ? 'Style-Bert-VITS2' : '音声OFF'}` : '接続確認中…'}
+              {health
+                ? `${health.model} · ${
+                    health.tts_enabled
+                      ? ttsProviderLabels[health.tts_provider] ?? health.tts_provider
+                      : '音声OFF'
+                  }`
+                : '接続確認中…'}
             </span>
           </div>
           <span className={`status status-${avatarState}`}>

@@ -95,6 +95,8 @@ async def test_health_returns_runtime_capabilities(
             hermes_api_key="test-secret",
             vrm_file="はむ子.vrm",
             suppress_blink_during_expression=True,
+            tts_provider="stylebertvits2",
+            stt_provider="faster_whisper",
             stt_model_dir=tmp_path / "whisper",
             local_assets_dir=tmp_path / "local-assets",
         ),
@@ -103,8 +105,10 @@ async def test_health_returns_runtime_capabilities(
     assert response["status"] == "ok"
     assert response["hermes"]["status"] == "ready"
     assert response["hermes"]["capabilities"]["features"]["run_submission"] is True
+    assert response["tts_provider"] == "stylebertvits2"
     assert response["stt"] == {
         "enabled": True,
+        "provider": "faster_whisper",
         "available": False,
         "model": "small",
         "device": "cpu",
