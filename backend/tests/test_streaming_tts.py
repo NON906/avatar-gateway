@@ -237,7 +237,8 @@ async def test_approval_preamble_and_result_are_synthesized_in_conversation_orde
     preamble_synthesis_started = asyncio.Event()
     synthesized: list[str] = []
     think = MotionDefinition("think", "考える", "think.vrma", "作業前の確認", True, True)
-    motion_catalog = MotionCatalog((think,), None)
+    please = MotionDefinition("please", "お願い", "please.vrma", "承認を頼む", True, True)
+    motion_catalog = MotionCatalog((think, please), None)
     preamble = (
         '[avatar]{"v":1,"motion":"think","expression":"relaxed"}[/avatar]\n'
         "[speech]了解！コマンドを再実行するね。[/speech]"
@@ -277,25 +278,68 @@ async def test_approval_preamble_and_result_are_synthesized_in_conversation_orde
     monkeypatch.setattr(main_module, "settings", replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"))
 
     response = await main_module.stream_hermes_conversation(
-        HermesConversationRequest(input="実行して"),
+        HermesConversationRequest(input="実行して", approval_prompt="承認をお願いします"),
     )
     body = "".join([
         chunk.decode() if isinstance(chunk, bytes) else chunk
         async for chunk in response.body_iterator
     ])
 
-    assert synthesized == ["了解！コマンドを再実行するね。", "無事に実行できたよ！"]
+    assert synthesized == [
+        "了解！コマンドを再実行するね。",
+        "承認をお願いします",
+        "無事に実行できたよ！",
+    ]
     assert body.index('"segment_index": 0') < body.index('"segment_index": 1')
+    assert body.index('"segment_index": 1') < body.index('"segment_index": 2')
     assert body.rfind("event: text.delta") < body.index("event: assistant.completed")
     assert 'event: text.delta\ndata: {"delta": "了解！コマンドを再実行するね。", "sequence": 7}' in body
+    assert "承認をお願いします" not in body
     assert '"motion": {"name": "think"' in body
+    assert '"motion": {"name": "please"' in body
     assert '"motion": null' in body
     assert '"expression": "relaxed"' in body
     assert '"expression": "happy"' in body
     assert "[avatar]" not in body
     assert "[motion:" not in body
     assert "[speech]" not in body
-    assert '"segments": 2' in body
+    assert '"segments": 3' in body
+
+
+@pytest.mark.asyncio
+async def test_blank_approval_prompt_is_not_spoken(monkeypatch: pytest.MonkeyPatch) -> None:
+    """空の設定では承認ウィンドウ用の追加発話を作りません。"""
+    synthesized: list[str] = []
+
+    async def fake_stream_agent_run(_request, _motion_prompt):
+        yield "approval.requested", {
+            "run_id": "run_test",
+            "command": "printf approval-test",
+            "choices": ["once", "deny"],
+        }
+        yield "assistant.completed", {"output": "[speech]終わったよ。[/speech]"}
+
+    async def fake_synthesize(text, _settings, _client):
+        synthesized.append(text)
+        utterance_id = f"blank-approval-{len(synthesized)}"
+        return utterance_id, main_module.settings.audio_dir / f"{utterance_id}.wav"
+
+    monkeypatch.setattr(main_module, "_stream_agent_run", fake_stream_agent_run)
+    monkeypatch.setattr(main_module, "synthesize", fake_synthesize)
+    monkeypatch.setattr(main_module, "create_tts_client", _DummyTtsClient)
+    monkeypatch.setattr(
+        main_module,
+        "settings",
+        replace(main_module.settings, tts_enabled=True, tts_provider="stylebertvits2"),
+    )
+
+    response = await main_module.stream_hermes_conversation(
+        HermesConversationRequest(input="実行して", approval_prompt="   "),
+    )
+    async for _chunk in response.body_iterator:
+        pass
+
+    assert synthesized == ["終わったよ。"]
 
 
 @pytest.mark.asyncio

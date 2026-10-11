@@ -1832,6 +1832,7 @@ export default function App() {
         body: JSON.stringify({
           input: messageToSend,
           session_id: hermesSessionId ?? undefined,
+          approval_prompt: uiSettings.approval_prompt,
         }),
         signal: session.controller.signal,
       })

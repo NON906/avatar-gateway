@@ -265,6 +265,18 @@ export default function SettingsPanel({
               onChange={(event) => onChange({ speech_volume: Number(event.target.value) })}
             />
           </label>
+          <label className="settings-text">
+            <span>
+              <strong>承認をお願いするときの発話</strong>
+              <small>権限の承認ウィンドウを出すとき、この文章を読み上げます。空にすると読み上げません。</small>
+            </span>
+            <input
+              type="text"
+              maxLength={80}
+              value={settings.approval_prompt}
+              onChange={(event) => onChange({ approval_prompt: event.target.value })}
+            />
+          </label>
           <label className="settings-range voice-input-setting">
             <span>
               <strong>話し終わりの無音時間</strong>

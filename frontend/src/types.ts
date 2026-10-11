@@ -198,6 +198,7 @@ export interface UiSettings {
   show_motion_controls: boolean
   show_camera_help: boolean
   speech_volume: number
+  approval_prompt: string
   camera: UiCameraSettings | null
   background: UiBackgroundSettings
   touch_interaction: UiTouchInteractionSettings

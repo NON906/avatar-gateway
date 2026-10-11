@@ -190,6 +190,16 @@ def _ui_settings_store() -> UiSettingsStore:
     return UiSettingsStore(settings.ui_settings_file)
 
 
+def _approval_prompt_text(request: HermesConversationRequest) -> str:
+    """今回の会話で送られた文を優先し、未指定のときだけサーバー既定値を使います。"""
+    if request.approval_prompt is not None:
+        return request.approval_prompt
+    try:
+        return _ui_settings_store().load().approval_prompt
+    except UiSettingsError:
+        return "承認をお願いします"
+
+
 def _resolve_vrm_asset() -> tuple[Path | None, str | None]:
     """利用者の差し替えを優先し、なければ同梱サンプルVRMを同一オリジンで返します。"""
     local_path = settings.local_assets_dir / "vrm" / settings.vrm_file
@@ -666,6 +676,16 @@ async def stream_hermes_conversation(
                     # バッファ済みLLM差分が多い場合も、最初の合成を先に開始できるよう譲ります。
                     await asyncio.sleep(0)
 
+            async def speak_approval_prompt() -> None:
+                """承認ウィンドウの表示に合わせ、設定された一文だけを会話履歴へ残さず読み上げます。"""
+                nonlocal current_speech_motion, current_speech_expression
+                prompt = _approval_prompt_text(request)
+                if not prompt:
+                    return
+                current_speech_motion = motion_catalog.selectable_motions.get("please")
+                current_speech_expression = "relaxed"
+                await enqueue_speech_chunks([prompt])
+
             async def publish_speech_parts(
                 speech_parsed: ParsedSpeechChunk,
                 source_sequence: int | None,
@@ -770,6 +790,8 @@ async def stream_hermes_conversation(
                     if event_name in {"approval.requested", "tool.started"}:
                         # 予告文を次のLLM差分まで保留せず、承認表示やツール実行と並行して発話させます。
                         await finish_speech_scene()
+                        if event_name == "approval.requested":
+                            await speak_approval_prompt()
                         # ツール結果は別のassistant発話なので、アバター制御も独立して解析します。
                         avatar_parser = AvatarDirectiveParser(motion_catalog.selectable_motions)
                         current_speech_motion = None

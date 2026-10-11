@@ -267,8 +267,20 @@ button, textarea { font: inherit; }
 .settings-toggle + .settings-toggle { border-top: 1px solid #e2e8f0; }
 .settings-toggle input { margin-top: 3px; }
 .settings-toggle span { display: flex; flex-direction: column; gap: 3px; }
-.settings-toggle strong, .settings-range strong { color: #334155; font-size: 12px; }
-.settings-toggle small { color: #64748b; font-size: 10px; line-height: 1.45; }
+.settings-toggle strong, .settings-range strong, .settings-text strong { color: #334155; font-size: 12px; }
+.settings-toggle small, .settings-text small { color: #64748b; font-size: 10px; line-height: 1.45; }
+.settings-text { display: block; margin: 4px 0 12px; }
+.settings-text span { display: flex; flex-direction: column; gap: 3px; }
+.settings-text input {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #1e293b;
+  font: inherit;
+}
 .gaze-setting-status { display: block; margin: 0 0 8px; color: #64748b; font-family: inherit; font-size: 10px; font-weight: 400; line-height: 1.45; }
 .gaze-setting-status span { display: block; }
 .touch-region-settings { margin: 8px 0 0; padding: 10px 0; border: 0; border-top: 1px solid #e2e8f0; color: #475569; }
