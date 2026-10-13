@@ -10,6 +10,8 @@ frontend/dist/
 frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+assets/vrm/*.vrm
+!assets/vrm/はむ子.vrm
 local-assets/vrm/*.vrm
 local-assets/motions/*.vrma
 local-assets/backgrounds/*
