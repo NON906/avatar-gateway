@@ -270,6 +270,7 @@ export default function GazeSpeechMonitor({
   const armedRef = useRef(true)
   const motionsRef = useRef(motions)
   const silentCursorRef = useRef(0)
+  const pendingGazeClaimRef = useRef(false)
   const [captureError, setCaptureError] = useState('')
   const [capturing, setCapturing] = useState(false)
   const cameraNeeded = enrolling || (enabled && enrollment !== null) || faceFollow
@@ -598,7 +599,7 @@ export default function GazeSpeechMonitor({
       let completedAll = true
       for (let index = 0; index < beats.length; index += 1) {
         const beat = beats[index]
-        unplayed = beats.slice(index)
+        unplayed = beats.slice(index + 1)
         if (blockedRef.current) {
           cancelGazeBeats(unplayed, '会話が始まったため視線発話を中止しました')
           unplayed = []
@@ -621,7 +622,6 @@ export default function GazeSpeechMonitor({
           beatIndex: index,
         })
         acted = true
-        unplayed = beats.slice(index + 1)
         const completed = await playBuffer(context, buffer, beat.utteranceId, index < beats.length - 1)
         if (!completed) {
           cancelGazeBeats(unplayed, '視線発話を中止しました')
@@ -637,6 +637,12 @@ export default function GazeSpeechMonitor({
     } finally {
       playingRef.current = false
       if (acted) onBeatRef.current(null)
+      // If we played at least one beat and we are not interrupted and not blocked, try to claim again immediately
+      if (acted && !blockedRef.current && !interruptedRef.current) {
+        window.setTimeout(() => {
+          claimAndPlay()
+        }, 0)
+      }
     }
   }
 
