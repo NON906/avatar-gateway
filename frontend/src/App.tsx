@@ -18,6 +18,7 @@ import { readDisplayMode, saveDisplayMode } from './lib/displayMode'
 import type { FaceFollowAngles } from './lib/faceFollow'
 import { readGazeSettings, writeGazeSettings } from './lib/gazeFace'
 import { appendGazeTranscript } from './lib/gazeTranscript'
+import { isNewSessionDisabled } from './lib/newSessionAvailability'
 import { readSessionMessages, readSessionSummary } from './lib/session'
 import { consumeSse } from './lib/sse'
 import {
@@ -1130,10 +1131,35 @@ export default function App() {
     setSessionHistoryOpen(false)
   }
 
-  /** 現在のHermes履歴を終了済みにしてから、ブラウザを空の新規会話へ切り替えます。 */
+  const newSessionDisabled = isNewSessionDisabled({
+    hermesSessionId,
+    gazeTranscript,
+    speaking: avatarState === 'speaking',
+    isBusy,
+    sessionResetting,
+    sessionSwitching,
+    sessionHistoryOpen,
+    agentResourcesOpen,
+    settingsOpen,
+  })
+
+  /** 現在のHermes履歴、または視線だけのログを終えて、ブラウザを空の新規会話へ切り替えます。 */
   const startNewSession = async () => {
+    if (newSessionDisabled) return
     const sessionId = hermesSessionId
-    if (!sessionId || isBusy || sessionResetting || sessionSwitching) return
+    if (!sessionId) {
+      if (!window.confirm('表示中の視線の会話を消して、新しいセッションを始めますか？')) return
+      gazeStopRef.current?.()
+      setGazeTranscript('')
+      setInput('')
+      setAvatarState('idle')
+      setAvatarExpression('neutral')
+      expressionOwnerRef.current = null
+      automaticMotionRef.current = null
+      setAnalyser(null)
+      setMotionCommand((current) => ({ id: (current?.id ?? 0) + 1, action: 'stop' }))
+      return
+    }
     if (!window.confirm('現在の会話を終了して、新しいセッションを始めますか？\n\n会話履歴はHermes側に保存されます。')) return
 
     setSessionResetting(true)
@@ -2199,7 +2225,7 @@ export default function App() {
               type="button"
               className="new-session-button"
               onClick={() => void startNewSession()}
-              disabled={!hermesSessionId || isBusy || sessionResetting || sessionSwitching || sessionHistoryOpen || agentResourcesOpen || settingsOpen}
+              disabled={newSessionDisabled}
               aria-label={newSessionActionLabel}
               title={newSessionActionLabel}
             >
