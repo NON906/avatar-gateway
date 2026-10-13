@@ -3,6 +3,7 @@ import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useRef, useState 
 
 import ApprovalPanel from './components/ApprovalPanel'
 import AgentResourcesPanel from './components/AgentResourcesPanel'
+import ModelSelectMenu from './components/ModelSelectMenu'
 import ConversationActivityOverlay from './components/ConversationActivityOverlay'
 import ConversationModeOverlay from './components/ConversationModeOverlay'
 import MarkdownMessage from './components/MarkdownMessage'
@@ -2206,6 +2207,10 @@ export default function App() {
             >
               <SessionActionIcon name="features" />
             </button>
+            <ModelSelectMenu
+              sessionId={hermesSessionId}
+              disabled={isBusy || sessionResetting || sessionSwitching}
+            />
             <button
               type="button"
               className="settings-button"

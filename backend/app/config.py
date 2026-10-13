@@ -49,6 +49,7 @@ class Settings:
     hermes_base_url: str = os.getenv("HERMES_BASE_URL", "http://127.0.0.1:8642/v1").rstrip("/")
     hermes_api_key: str = os.getenv("HERMES_API_KEY", "")
     hermes_model: str = os.getenv("HERMES_MODEL", "hermes-agent")
+    hermes_model_file: Path = PROJECT_ROOT / "runtime" / "hermes_model.json"
     daily_timezone: str = os.getenv("AVATAR_GATEWAY_TIMEZONE", "Asia/Tokyo").strip()
     hermes_image_cache_dir: Path = Path(os.getenv(
         "HERMES_IMAGE_CACHE_DIR",

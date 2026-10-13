@@ -18,6 +18,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .config import PROJECT_ROOT, settings
 from .models import (
     HermesConversationRequest,
+    HermesModelSelectRequest,
     HermesRunApprovalRequest,
     HermesRunCreateRequest,
     HermesSessionCreateRequest,
@@ -30,6 +31,13 @@ from .services.hermes import (
     HermesSessionNotFoundError,
 )
 from .services.hermes_runs import HermesRunCoordinator
+from .services.model_selection import (
+    ModelSelectionError,
+    ModelSelectionStore,
+    SelectedHermesModel,
+    public_model_catalog,
+    selection_is_listed,
+)
 from .services.generated_images import GeneratedImageStore
 from .services.hermes_diagnostics import hermes_diagnostic_notice
 from .services.speech_backends import (
@@ -171,6 +179,21 @@ async def protect_gateway(request: Request, call_next):
 def _sse(event: str, data: dict) -> str:
     """改行を含む本文も壊れないJSON形式のSSEイベントを作ります。"""
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _model_selection_store() -> ModelSelectionStore:
+    """テストが差し替えた設定ファイルも、いまの選択として読みます。"""
+    return ModelSelectionStore(settings.hermes_model_file)
+
+
+def _effective_hermes_model() -> str:
+    """画面の選択があればそれを、なければ起動時のモデル名を返します。"""
+    try:
+        selected = _model_selection_store().load()
+    except ModelSelectionError:
+        logger.warning("saved Hermes model selection is unreadable")
+        return settings.hermes_model
+    return selected.model if selected else settings.hermes_model
 
 
 def _load_motion_catalog() -> MotionCatalog:
@@ -359,7 +382,7 @@ async def health() -> dict:
     hermes = await _hermes_health()
     return {
         "status": "ok",
-        "model": settings.hermes_model,
+        "model": _effective_hermes_model(),
         "hermes": hermes,
         "tts_enabled": settings.tts_enabled,
         "tts_provider": settings.tts_provider,
@@ -529,6 +552,67 @@ async def start_hermes_run(request: HermesRunCreateRequest) -> dict:
         return await run_coordinator.start_run(request.session_id, request.input)
     except HermesError as exc:
         _raise_hermes_api_error(exc)
+
+
+@app.get("/api/hermes/models")
+async def list_hermes_models() -> dict:
+    """Hermesのモデル一覧を、認証情報を除いて画面へ返します。"""
+    try:
+        selected = _model_selection_store().load()
+        catalog = public_model_catalog(await HermesClient(settings).list_model_options())
+    except ModelSelectionError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except HermesError as exc:
+        _raise_hermes_api_error(exc)
+    return {
+        "default_model": settings.hermes_model,
+        "selected": selected.model_dump() if selected else None,
+        "current_model": catalog["current_model"],
+        "current_provider": catalog["current_provider"],
+        "providers": catalog["providers"],
+    }
+
+
+@app.put("/api/hermes/model")
+async def select_hermes_model(request: Request, body: HermesModelSelectRequest) -> dict:
+    """選んだモデルを保存し、進行中のセッションがあればHermesへ固定します。"""
+    if not is_same_origin_request(request.headers.get("Origin"), request.headers.get("Host")):
+        raise HTTPException(status_code=403, detail="異なるオリジンからの設定変更は許可されていません")
+    store = _model_selection_store()
+    client = HermesClient(settings)
+    try:
+        if body.use_default:
+            store.clear()
+            locked = await _lock_default_session_model(client, body.session_id)
+            return {"selected": None, "model": settings.hermes_model, "session_locked": locked}
+        if not body.model or not body.provider:
+            raise HTTPException(status_code=422, detail="モデルとプロバイダを指定してください")
+        catalog = public_model_catalog(await client.list_model_options())
+        if not selection_is_listed(catalog, body.model, body.provider):
+            raise HTTPException(status_code=422, detail="指定されたモデルはHermesの一覧にありません")
+        saved = store.save(SelectedHermesModel(model=body.model, provider=body.provider))
+        locked = False
+        if body.session_id:
+            await client.lock_session_model(body.session_id, saved.model, saved.provider)
+            locked = True
+    except ModelSelectionError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except HermesError as exc:
+        _raise_hermes_api_error(exc)
+    return {"selected": saved.model_dump(), "model": saved.model, "session_locked": locked}
+
+
+async def _lock_default_session_model(client: HermesClient, session_id: str | None) -> bool:
+    """既定へ戻すとき、進行中セッションの固定先もHermesの現在モデルへ合わせます。"""
+    if not session_id:
+        return False
+    catalog = public_model_catalog(await client.list_model_options())
+    model = catalog["current_model"]
+    provider = catalog["current_provider"]
+    if not model or not provider:
+        return False
+    await client.lock_session_model(session_id, model, provider)
+    return True
 
 
 @app.get("/api/hermes/runs/{run_id}")

@@ -25,7 +25,6 @@ class HermesConversationRequest(BaseModel):
         max_length=47,
         pattern=r"^avatar_gateway_[0-9a-f]{32}$",
     )
-
     approval_prompt: str | None = Field(default=None, max_length=80)
 
     @field_validator("input")
@@ -44,6 +43,33 @@ class HermesConversationRequest(BaseModel):
         if value is None:
             return None
         return _normalize_approval_prompt(value)
+
+
+class HermesModelSelectRequest(BaseModel):
+    """画面で選んだHermesモデル、または既定への復帰を受け取ります。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    use_default: bool = False
+    model: str | None = Field(default=None, max_length=200)
+    provider: str | None = Field(default=None, max_length=80)
+    session_id: str | None = Field(
+        default=None,
+        min_length=47,
+        max_length=47,
+        pattern=r"^avatar_gateway_[0-9a-f]{32}$",
+    )
+
+    @field_validator("model", "provider")
+    @classmethod
+    def reject_blank_identifier(cls, value: str | None) -> str | None:
+        """空白だけの識別子を、未指定とは別に拒否します。"""
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("identifier must not be blank")
+        return stripped
 
 
 class HermesSessionCreateRequest(BaseModel):
