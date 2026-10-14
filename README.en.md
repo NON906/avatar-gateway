@@ -138,8 +138,6 @@ OPENAI_TTS_VOICE=none
 
 An empty `OPENAI_TTS_MODEL` uses whichever synthesis model the server holds. `OPENAI_TTS_SPEED`, `OPENAI_TTS_INSTRUCTIONS`, and `OPENAI_TTS_LANGUAGE` are not sent while empty. speech.cpp refuses members it does not take rather than ignoring them, so set only what your model supports.
 
-Conversation speech uses `response_format=pcm` and `stream_format=sse`, and playback starts before the sentence is finished. Only a server that refuses SSE falls back to waiting for a whole WAV. Long silence is shortened as audio arrives: a start longer than 0.15 seconds, an end longer than 0.25 seconds, or a gap longer than 0.4 seconds is cut to about 0.04, 0.08, and 0.18 seconds. Shorter breaths are left as they are. Sentence-by-sentence playback and the stop-speech button behave exactly as they do with Style-Bert-VITS2.
-
 #### Voice for Hamuko
 
 A free Style-Bert-VITS2 voice model for Hamuko is available on BOOTH: [Hamuko Voice Data for Avatar Gateway](https://kinkuman.booth.pm/items/8885580).
@@ -198,8 +196,6 @@ OPENAI_STT_RESPONSE_FORMAT=json
 speech.cpp accepts only WAV, so a browser recording in WebM or MP4 is converted to 16 kHz mono WAV before it is sent. The conversion uses `av`, which ships with `faster-whisper`, so nothing extra has to be installed.
 
 Set `OPENAI_STT_RESPONSE_FORMAT=verbose_json` to also receive the language and duration the server reports. Put proper nouns you want recognized in `OPENAI_STT_PROMPT`, for a model that takes one.
-
-If speech.cpp holds no recognition model, the message says so after you record. Start it with a model, for example `speech serve reazonspeech-v2 silero-vad`.
 
 ## 2. Change the VRM (Optional)
 

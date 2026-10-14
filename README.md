@@ -131,8 +131,6 @@ OPENAI_TTS_VOICE=none
 
 `OPENAI_TTS_MODEL`が空なら、サーバーが保持している合成モデルをそのまま使います。`OPENAI_TTS_SPEED`、`OPENAI_TTS_INSTRUCTIONS`、`OPENAI_TTS_LANGUAGE`は空なら送信しません。speech.cppは受け付けない項目を無視せずエラーにするため、モデルが対応するものだけ設定してください。
 
-会話の読み上げは`response_format=pcm`と`stream_format=sse`で受け、文の完成を待たずに再生を始めます。サーバーがSSEを拒否したときだけ、従来どおりWAVをまとめて取得します。届いた音声の長い無音は短い間へ詰めます。先頭が0.15秒、末尾が0.25秒、途中が0.4秒を超える場合だけが対象で、それぞれ約0.04秒、約0.08秒、約0.18秒まで残します。これより短い息継ぎはそのまま残します。文単位の分割や読み上げ停止は、Style-Bert-VITS2のときと同じように動作します。
-
 #### はむ子用音声
 
 はむ子用の音声合成モデルがBOOTHより無料でダウンロード可能です。
@@ -197,8 +195,6 @@ OPENAI_STT_RESPONSE_FORMAT=json
 speech.cppはWAVしか受け取らないため、ブラウザがWebMやMP4で録音した音声は、送信前に16kHzモノラルのWAVへ変換します。変換には`faster-whisper`が同梱する`av`を使うため、追加の導入は必要ありません。
 
 `OPENAI_STT_RESPONSE_FORMAT`に`verbose_json`を指定すると、サーバーが返す言語と長さも受け取ります。固有名詞を認識させたい場合は`OPENAI_STT_PROMPT`へ書きます（対応モデルのみ）。
-
-speech.cpp側に認識モデルが読み込まれていない場合は、録音後にその旨のメッセージを表示します。`speech serve reazonspeech-v2 silero-vad`のようにモデルを指定して起動してください。
 
 ## 2. VRMを変更する（任意）
 
