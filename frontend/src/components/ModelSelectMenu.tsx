@@ -109,7 +109,7 @@ export default function ModelSelectMenu({ sessionId, disabled }: Props) {
     return () => controller.abort()
   }, [open])
 
-  const activeLabel = catalog?.selected?.model ?? catalog?.defaultModel ?? 'モデル'
+  const activeLabel = catalog?.selected?.model ?? catalog?.defaultModel ?? ''
   const normalizedQuery = query.trim().toLowerCase()
   const visibleProviders = (catalog?.providers ?? []).map((provider) => ({
     ...provider,
@@ -163,8 +163,8 @@ export default function ModelSelectMenu({ sessionId, disabled }: Props) {
         disabled={disabled}
         aria-expanded={open}
         aria-controls={listId}
-        aria-label={`モデルを切り替える（現在: ${activeLabel}）`}
-        title={`モデルを切り替える（現在: ${activeLabel}）`}
+        aria-label={activeLabel ? `モデルを切り替える（現在: ${activeLabel}）` : 'モデルを切り替える'}
+        title={activeLabel ? `モデルを切り替える（現在: ${activeLabel}）` : 'モデルを切り替える'}
       >
         <SessionActionIcon name="model" />
       </button>
