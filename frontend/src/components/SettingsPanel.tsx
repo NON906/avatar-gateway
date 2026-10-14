@@ -381,7 +381,7 @@ export default function SettingsPanel({
               />
               <span>
                 <strong>視線発話をメッセージに同期</strong>
-                <small>視線で話しかけた内容を、次のユーザー発言の先頭に <code>[avatar_gateway_message]</code> として付与して送信します。会話の文脈に含めたいときに有効にします。</small>
+                <small>視線で話しかけた内容を、次のユーザー発言と一緒に送ります。会話欄ではHermes側の吹き出しとして表示します。</small>
               </span>
             </label>
           </div>

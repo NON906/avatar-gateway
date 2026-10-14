@@ -19,6 +19,7 @@ import { readDisplayMode, saveDisplayMode } from './lib/displayMode'
 import type { FaceFollowAngles } from './lib/faceFollow'
 import { readGazeSettings, writeGazeSettings } from './lib/gazeFace'
 import { appendGazeTranscript } from './lib/gazeTranscript'
+import { splitGatewayMessages } from './lib/gatewayMessage'
 import { isNewSessionDisabled } from './lib/newSessionAvailability'
 import { readSessionMessages, readSessionSummary } from './lib/session'
 import { consumeSse } from './lib/sse'
@@ -2292,8 +2293,8 @@ export default function App() {
           <div className="conversation-scroll" ref={logRef}>
             <div className="messages" aria-live="polite">
               {messages.length === 0 && !gazeTranscript.trim() && <div className="welcome"><h2>こんにちは</h2><p>下の欄からHermesへ話しかけてください。</p></div>}
-              {messages.map((message, index) => (
-                <article className={`message ${message.role}`} key={`${message.role}-${index}`}>
+              {splitGatewayMessages(messages).map((message) => (
+                <article className={`message ${message.role}`} key={message.key}>
                   <span>{message.role === 'user' ? 'あなた' : 'Hermes'}</span>
                   {message.role === 'assistant' ? (
                     <MarkdownMessage content={message.content} />

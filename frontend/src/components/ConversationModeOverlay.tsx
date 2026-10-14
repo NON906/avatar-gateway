@@ -2,6 +2,7 @@
 
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { splitGatewayMessages } from '../lib/gatewayMessage'
 import type { AvatarState, Message } from '../types'
 import MarkdownMessage from './MarkdownMessage'
 
@@ -44,17 +45,18 @@ function presentConversationAnswer(answer: string): PresentedAnswer {
 
 /** 最後の利用者入力を起点に、分割される場合がある応答本文を一つの表示へまとめます。 */
 function findLatestTurn(messages: Message[]): LatestTurn | null {
+  const displayed = splitGatewayMessages(messages)
   let questionIndex = -1
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'user') {
+  for (let index = displayed.length - 1; index >= 0; index -= 1) {
+    if (displayed[index].role === 'user') {
       questionIndex = index
       break
     }
   }
   if (questionIndex < 0) return null
   return {
-    question: messages[questionIndex].content,
-    answer: messages
+    question: displayed[questionIndex].content,
+    answer: displayed
       .slice(questionIndex + 1)
       .filter((message) => message.role === 'assistant' && message.content.trim())
       .map((message) => message.content)
