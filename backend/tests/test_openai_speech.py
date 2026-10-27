@@ -93,8 +93,15 @@ def test_base_url_without_version_reaches_openai_paths() -> None:
 
 
 def test_speech_request_leaves_out_unset_members() -> None:
-    """未設定のvoiceやspeedを送ると拒否されるため、本文へ入れません。"""
-    config = replace(settings, openai_tts_voice="none")
+    """未設定のvoiceやspeedを送ると拒否されるため、本文へ入れません。
+    環境変数の設定に左右されないよう、未設定項目は明示的に無効化します。"""
+    config = replace(
+        settings,
+        openai_tts_voice="none",
+        openai_tts_model=None,
+        openai_tts_speed=None,
+        openai_tts_language=None,
+    )
 
     payload = speech_payload("こんにちは。", config)
 
